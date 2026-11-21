@@ -65,13 +65,27 @@ def should_stop(S_ms, remaining, cpu, ms, p, evidence=True):
     return inc <= run
 
 
+ROBUST = ("test_max_nodes", "test_generator_memory")
+
+
 def heavy_include(h, S_ms, ms, n_fail, P, kind="file", n_cheap_line=0):
     """A heavy test is never run whole. Its failure probability grows with how broadly the
     change breaks cheap tests (verified on synthetic commits: tpcds failed alongside 7, 30,
     35, 51 cheap failures and passed alongside 1 or 2). With no failure it is high only when
     it is one of the few tests executing the changed line."""
-    if n_fail >= 3:
+    # verified on synthetic commits: executor tpcds failed alongside 30, 35, 35, 51, 56 cheap
+    # failures and passed alongside 0, 0, 1, 1, 1, 2, 7; test_max_nodes passed alongside 7
+    robust = h.rsplit("::", 1)[-1] in ROBUST
+    if n_fail >= 25:
         p = P.p_heavy_dirty
+    elif robust and kind != "line":
+        # stress tests of plain SELECT parsing / generator construction: they break only
+        # with the basics (hundreds of failures) or through their own code (line kind)
+        p = 0.01
+    elif n_fail >= 10:
+        p = 0.4
+    elif n_fail >= 3:
+        p = 0.08
     elif n_fail >= 1:
         p = 0.06 if kind == "line" else 0.01
     elif kind == "line":

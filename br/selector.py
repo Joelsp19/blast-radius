@@ -28,6 +28,8 @@ SG = os.environ.get("SQLGLOT_DIR", "/opt/sqlglot")
 HEAVY = float(os.environ.get("BR_HEAVY", "3.0"))  # seconds; never run tests this slow
 PAR = int(os.environ.get("BR_PAR", "2"))
 DEBUG = os.environ.get("BR_DEBUG")
+HNF = int(os.environ.get("BR_HNF", "10"))
+HDT = int(os.environ.get("BR_HDT", "5000"))
 T0 = time.time()
 
 
@@ -200,7 +202,9 @@ def child_main(plan, run_ids, wfd, cm):
         if plan.mode == "fresh":
             do_purge(plan, cm)
             if getattr(plan, "orig_fp", None) is not None:
-                run_ids = slice_by_state(plan, cm, run_ids, out)
+                hv = [h for h in getattr(plan, "heavy_ids", ()) if h not in run_ids]
+                keep = slice_by_state(plan, cm, run_ids + hv, out)
+                run_ids = [t for t in keep if t not in hv]
         else:
             do_swaps(plan)
     except BaseException as e:  # noqa
@@ -240,6 +244,8 @@ class Job:
         self.ms, self.cpu, self.p = ms, cpu, p
         self.cpu_used = 0.0
         self.est_done = 0
+        self.heavy = ()  # heavy candidates decided after the run
+        self.unobs = set()  # tests shown unable to observe the change (state slicing)
         self.first_fail_cpu = None
 
     def cpu_spent(self):
@@ -254,7 +260,9 @@ class Job:
         # (estimated, not measured, cpu: decisions must not depend on machine noise)
         if self.failed and self.first_fail_cpu is None:
             self.first_fail_cpu = self.est_done
-        ev = len(self.failed) >= 3 or (self.failed and self.est_done - self.first_fail_cpu > 3000)
+        # with heavy tests at stake, how broad the breakage is decides them: look further
+        nf, dt = (HNF, HDT) if self.heavy else (3, 3000)
+        ev = len(self.failed) >= nf or (self.failed and self.est_done - self.first_fail_cpu > dt)
         if self.todo and policy.should_stop(cur, self.todo, self.cpu, self.ms, self.p, ev):
             self.out |= set(self.todo)
             self.todo = []
@@ -308,6 +316,7 @@ def handle_line(job, line):
         job.cur_t = time.time()
     elif line.startswith("K "):
         tid = line[2:]
+        job.unobs.add(tid)
         if tid in job.todo:
             job.todo.remove(tid)
     elif line.startswith("N "):
@@ -534,6 +543,8 @@ def main():
             k, base = (3.0, 3.0) if plan.mode == "fresh" else (2.0, 1.5)
             timeouts = {c: k * jcpu[c] / 1000 + base for c in R}
             j = Job(plan, R, timeouts, D, ms, jcpu, p)
+            j.heavy = tuple(sorted(H))
+            plan.heavy_ids = j.heavy
             if not j.maybe_stop():
                 jobs.append(j)
             else:
@@ -589,14 +600,17 @@ def main():
         for j in jobs:
             results[j.plan.cid] |= j.failed | j.out
             if DEBUG:
-                log(j.plan.cid, j.plan.mode, f"cpu {j.cpu_used:.2f}", "FAILED", len(j.failed), "INCLUDED", len(j.out))
+                log(j.plan.cid, j.plan.mode, f"cpu {j.cpu_used:.2f} est {j.est_done / 1000:.2f}", "FAILED", len(j.failed), "INCLUDED", len(j.out))
 
     # expensive tests are never run: include them when the expected miss cost is higher
     failed_by = {j.plan.cid: j.failed for j in jobs}
+    unobs = {j.plan.cid: j.unobs for j in jobs}
     for cid, (H, p, sure) in heavies.items():
         sel = results[cid]
         nf = len(failed_by.get(cid, ())) + len(sure)
         for h in sorted(H, key=lambda h: -ms[h]):
+            if h in unobs.get(cid, ()):
+                continue
             if policy.heavy_include(h, [ms[t] for t in sel], ms, nf, P, why[cid].get(h, "file"), ncl[cid]):
                 sel.add(h)
 
