@@ -30,6 +30,38 @@ class _LazySets:
         return k in self.raw
 
 
+class _LazySubtests:
+    """Per-test sub-test coverage, kept in separate files and read on first use."""
+
+    def __init__(self, path, index, inline):
+        import os
+
+        self.dir = os.path.join(os.path.dirname(path), "sub")
+        self.index, self.done = index, dict(inline)
+
+    def get(self, tid, default=None):
+        r = self.done.get(tid)
+        if r is None:
+            fn = self.index.get(tid)
+            if fn is None:
+                return default
+            import gzip
+            import os
+
+            with gzip.open(os.path.join(self.dir, fn), "rb") as f:
+                r = self.done[tid] = json.loads(f.read())
+        return r
+
+    def __getitem__(self, tid):
+        r = self.get(tid)
+        if r is None:
+            raise KeyError(tid)
+        return r
+
+    def __contains__(self, tid):
+        return tid in self.done or tid in self.index
+
+
 class CMap:
     def __init__(self, path):
         if path.endswith(".gz"):
@@ -63,7 +95,7 @@ class CMap:
         self.doc_tests = frozenset(t for t in ids if t.startswith("tests/test_docs.py::"))
         self.cpu = dict(zip(ids, d.get("cpu", [0] * len(ids))))
         self._fc = {}
-        self.subtests = d.get("subtests", {})
+        self.subtests = _LazySubtests(path, d.get("subtests_index", {}), d.get("subtests", {}))
         self._d = {k: d[k] for k in ("attr_map", "attr_sets") if k in d}
         self.key_labels = set(d.get("key_labels", ()))
         self.key_unsafe = set(d.get("key_unsafe", ()))

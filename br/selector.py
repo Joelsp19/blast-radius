@@ -110,6 +110,8 @@ def slice_by_state(plan, cm, run_ids, out):
             importlib.import_module(mn)
         except BaseException:  # noqa
             return run_ids  # cannot compare: run everything
+    if DEBUG:
+        log(plan.cid, "child imported", round(time.process_time(), 2))
     newc = statediff.class_keys(plan.slice_mods)
     for k in plan.orig_fp:
         if k not in newc:
@@ -167,6 +169,8 @@ def slice_by_state(plan, cm, run_ids, out):
             continue  # also a class attribute: visible anywhere
         names.add(n)
     scoped = {n: sc for n, sc in mod_scope.items() if sc is not None and n not in cnames}
+    if DEBUG:
+        log(plan.cid, "child fingerprinted", round(time.process_time(), 2))
     keep_kinds = {"line", "fixture"}
     allowed = {t for t in run_ids if plan.why.get(t) in keep_kinds}
     hits = statediff.lines_mentioning(SG, names, cm.line_files())
@@ -237,6 +241,8 @@ def child_main(plan, run_ids, wfd, cm):
             do_swaps(plan)
     except BaseException as e:  # noqa
         out.write(f"E {e!r}\n")
+    if DEBUG:
+        log(plan.cid, "child sliced", round(time.process_time(), 2), len(run_ids))
     harness.zygote_mode(False)
     # class fixtures first (not charged to any test's timeout)
     out.write("S __setup__\n")
@@ -248,6 +254,8 @@ def child_main(plan, run_ids, wfd, cm):
         except BaseException:  # noqa
             pass
     out.write("R 0 __setup__\n")
+    if DEBUG:
+        log(plan.cid, "child setup done", round(time.process_time(), 2))
     for tid in run_ids:
         out.write(f"S {tid}\n")
         try:

@@ -273,6 +273,22 @@ def main():
         out["key_keys"] = {lab: {k: intern(st) for k, st in d.items()} for lab, d in keyed.items()}
         out["key_sets"] = ksets
         print("key coverage: labels", len(labels), "sets", len(ksets))
+    # sub-test coverage is large and rarely needed: one file per test, loaded on demand
+    if out.get("subtests") and sys.argv[4].endswith(".gz"):
+        import gzip
+        import hashlib
+        import shutil
+
+        sdir = os.path.join(os.path.dirname(sys.argv[4]), "sub")
+        shutil.rmtree(sdir, ignore_errors=True)
+        os.makedirs(sdir)
+        index = {}
+        for tid, v in out.pop("subtests").items():
+            fn = hashlib.blake2b(tid.encode(), digest_size=8).hexdigest() + ".json.gz"
+            with open(os.path.join(sdir, fn), "wb") as f:
+                f.write(gzip.compress(json.dumps(v, separators=(",", ":")).encode(), 9, mtime=0))
+            index[tid] = fn
+        out["subtests_index"] = index
     blob = json.dumps(out, separators=(",", ":")).encode()
     if sys.argv[4].endswith(".gz"):
         import gzip
