@@ -107,6 +107,7 @@ def class_keys(modnames):
             out[k] = c
             todo.append(c)
             stack.extend(v for v in vars(c).values() if isinstance(v, type) and v.__module__ == mn)
+    ambiguous = set()
     while todo:
         c = todo.pop()
         try:
@@ -118,6 +119,10 @@ def class_keys(modnames):
             if k not in out:
                 out[k] = s
                 todo.append(s)
+            elif out[k] is not s:
+                ambiguous.add(k)  # e.g. classes created on the fly by a metaclass
+    for k in ambiguous:
+        out.pop(k, None)
     return out
 
 

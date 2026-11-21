@@ -168,8 +168,8 @@ class Analyzer:
                 if path.startswith("tests/"):
                     plan.add("file", m.tests_in_file(path))
             return
-        if path.startswith("tests/"):
-            # data / fixture file
+        if path.startswith("tests/") or path in m.opens or path in m.preload_opens:
+            # data / fixture file (anywhere in the repo, as long as some test reads it)
             if txt_old is not None and txt_new is not None and txt_old == txt_new:
                 return
             users = m.opens.get(path, set())

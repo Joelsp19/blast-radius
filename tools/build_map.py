@@ -129,7 +129,7 @@ def main():
     opens = {}
     for n, fs in trace["opens"].items():
         for f in fs:
-            if "__pycache__" in f or f.endswith(".py"):
+            if "__pycache__" in f or (f.endswith(".py") and f.startswith(("sqlglot/", "tests/"))):
                 continue
             opens.setdefault(f, []).append(pos[n])
     types = {}
@@ -141,10 +141,10 @@ def main():
     id_pos = {i: p for p, i in enumerate(ids)}
     pou = {}
     for f, tids in extras["preload_open_users"].items():
-        if "__pycache__" in f or f.endswith(".py"):
+        if "__pycache__" in f or (f.endswith(".py") and f.startswith(("sqlglot/", "tests/"))):
             continue
         pou[f] = sorted({id_pos[t] for t in tids if t in id_pos})
-    preload_opens = sorted(f for f in trace["preload_opens"] if "__pycache__" not in f and not f.endswith(".py"))
+    preload_opens = sorted(f for f in trace["preload_opens"] if "__pycache__" not in f and not (f.endswith(".py") and f.startswith(("sqlglot/", "tests/"))))
     v1 = os.path.join(os.path.dirname(sys.argv[1]), "trace.json")
     cpu_src = json.load(open(v1))["cpu"] if os.path.exists(v1) else trace["cpu"]
     out = {

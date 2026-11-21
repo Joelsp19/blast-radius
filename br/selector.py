@@ -122,26 +122,24 @@ def slice_by_state(plan, cm, run_ids, out):
     keep_kinds = {"line", "fixture"}
     allowed = {t for t in run_ids if plan.why.get(t) in keep_kinds}
     hits = statediff.lines_mentioning(SG, names, cm.line_files())
-    textual = set()
-    for rel, lines in hits.items():
-        for ln in lines:
-            textual |= cm.line_tests(rel, ln)
     mentioned = set()
+    textual = {n: set() for n in names}
     for rel, lines in hits.items():
         with open(os.path.join(SG, rel), encoding="utf-8") as f:
-            text = f.read()
-        for n in names:
-            if re.search(BOUND + re.escape(n) + BOUND, text):
-                mentioned.add(n)
+            src_lines = f.read().split(NL)
+        for ln in lines:
+            txt = src_lines[ln - 1] if ln - 1 < len(src_lines) else ""
+            tests = cm.line_tests(rel, ln)
+            for n in names:
+                if re.search(BOUND + re.escape(n) + BOUND, txt):
+                    mentioned.add(n)
+                    textual[n] |= tests
     if names - mentioned:
         # some changed attribute is only reached dynamically: keep all class users
         return run_ids
-    if cm.has_attrs:
-        # attribute-read coverage: tests that actually loaded one of the changed names
-        for n in names:
-            allowed |= cm.attr_readers(n)
-    else:
-        allowed |= textual
+    for n in names:
+        # both are over-approximations of the tests that read `n`; so is their intersection
+        allowed |= (textual[n] & cm.attr_readers(n)) if cm.has_attrs else textual[n]
     keep = [t for t in run_ids if t in allowed]
     out.write("N " + ",".join(sorted(names))[:2000] + NL)
     for t in run_ids:
