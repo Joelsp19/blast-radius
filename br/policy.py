@@ -30,7 +30,7 @@ class Params:
     p_line = 0.45  # calibrated on sample + synthetic commits (0.51)
     p_type = 0.02  # calibrated (0.022)
     p_heavy_clean = 0.02  # heavy candidate, nothing else failed
-    p_heavy_dirty = 0.5  # heavy candidate, something else failed
+    p_heavy_dirty = 0.8  # heavy candidate, >= 3 cheap tests failed
     cpu_factor = 1.0  # harness cpu vs estimate
 
 
@@ -65,12 +65,15 @@ def should_stop(S_ms, remaining, cpu, ms, p, evidence=True):
     return inc <= run
 
 
-def heavy_include(h, S_ms, ms, any_fail, P, kind="file", n_cheap_line=0):
-    """A heavy test is never run. Its failure probability: high if the commit already fails;
-    otherwise high when it is one of the few tests executing the changed line (the cheap
-    tests that also execute it all passed, which is evidence it is harmless)."""
-    if any_fail:
+def heavy_include(h, S_ms, ms, n_fail, P, kind="file", n_cheap_line=0):
+    """A heavy test is never run whole. Its failure probability grows with how broadly the
+    change breaks cheap tests (verified on synthetic commits: tpcds failed alongside 7, 30,
+    35, 51 cheap failures and passed alongside 1 or 2). With no failure it is high only when
+    it is one of the few tests executing the changed line."""
+    if n_fail >= 3:
         p = P.p_heavy_dirty
+    elif n_fail >= 1:
+        p = 0.06 if kind == "line" else 0.01
     elif kind == "line":
         p = max(P.p_heavy_clean, 0.4 / (1 + n_cheap_line))
     else:

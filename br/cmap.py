@@ -58,6 +58,7 @@ class CMap:
         self.cpu = dict(zip(ids, d.get("cpu", [0] * len(ids))))
         self._fc = {}
         self.subtests = d.get("subtests", {})
+        self._d = {k: d[k] for k in ("attr_map", "attr_sets") if k in d}
         self.has_lines = "lines" in d
         self._sets = d.get("line_sets", [])
         self._lines = d.get("lines", {})
@@ -73,6 +74,21 @@ class CMap:
         for path, ln in touched:
             q.update(st["lines"].get(path, {}).get(str(ln), ()))
         return sorted(q)
+
+    @property
+    def has_attrs(self):
+        return "attr_map" in self._d
+
+    def attr_readers(self, name):
+        """Tests that loaded attribute/global `name` (empty if none did)."""
+        si = self._d["attr_map"].get(name)
+        if si is None:
+            return frozenset()
+        key = ("a", si)
+        r = self._set_cache.get(key)
+        if r is None:
+            r = self._set_cache[key] = frozenset(self.ids[i] for i in self._d["attr_sets"][si])
+        return r
 
     def line_files(self):
         return list(self._lines)

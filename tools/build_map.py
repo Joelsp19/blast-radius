@@ -188,6 +188,26 @@ def main():
         for fi, ln in L["preload"]:
             out["preload_lines"].setdefault(flist[fi], []).append(ln)
         print("line sets", len(sets), "files", len(lines))
+    attrs_path = os.path.join(os.path.dirname(sys.argv[1]), "attrs.json")
+    if os.path.exists(attrs_path):
+        AT = json.load(open(attrs_path))
+        per = {}
+        for tid, idxs in AT["tests"].items():
+            if tid not in id_pos:
+                continue
+            for i in idxs:
+                per.setdefault(i, []).append(id_pos[tid])
+        asets, aidx, amap = [], {}, {}
+        for i, tl in per.items():
+            key = tuple(sorted(tl))
+            si = aidx.get(key)
+            if si is None:
+                si = aidx[key] = len(asets)
+                asets.append(list(key))
+            amap[AT["names"][i]] = si
+        out["attr_sets"] = asets
+        out["attr_map"] = amap
+        print("attr names", len(amap), "sets", len(asets))
     sub_path = os.path.join(os.path.dirname(sys.argv[1]), "subtests.json")
     if os.path.exists(sub_path):
         S = json.load(open(sub_path))

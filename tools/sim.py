@@ -41,7 +41,8 @@ for f in sorted(glob.glob(os.path.join(BL, "work/m/*.json"))):
     cpuL = d["cpu"]
     # the labelers ran under a 1.2 GB cap: heavy-test failures are only trusted when
     # re-verified in isolation (tools/verify.py)
-    VERIFIED = {"m1x032": {"tests/test_executor.py::TestExecutor::test_execute_tpcds"}}
+    TPCDS = "tests/test_executor.py::TestExecutor::test_execute_tpcds"
+    VERIFIED = {c: {TPCDS} for c in ("m1x032", "m1x016", "m1x003", "m1x045", "m1x048", "m1x071")}
     truth = {t for t in d["failed"] if cpuL.get(t) is not None
              and (ms[t] < 3000 or t in VERIFIED.get(cid, ()))}
     ran = {t for t in d["ran"] if cpuL.get(t) is not None}
@@ -86,8 +87,11 @@ for cid, text, truth, ran in commits:
     spent = 0
     out = set(D)
     remaining = list(R)
+    first = None
     while remaining:
-        ev = bool(F) or any(p[t] >= 0.5 for t in D)
+        if F and first is None:
+            first = spent
+        ev = len(F) >= 3 or (F and spent - first > 3000)
         if policy.should_stop([ms[t] for t in out | F], remaining, cpu_c, ms, p, ev):
             out |= set(remaining)
             break
@@ -96,7 +100,7 @@ for cid, text, truth, ran in commits:
         if t in truth:
             F.add(t)
     out |= F
-    anyf = bool(F) or any(p[t] >= 0.5 for t in D)
+    anyf = len(F) + sum(1 for t in D if p[t] >= 0.5)
     for h in sorted(H, key=lambda h: -ms[h]):
         ncl = sum(1 for t in cands if plan.why.get(t) == "line" and ms[t] < P.heavy_ms)
         if policy.heavy_include(h, [ms[t] for t in out], ms, anyf, P, plan.why.get(h, "file"), ncl):

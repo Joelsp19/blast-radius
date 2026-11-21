@@ -136,7 +136,12 @@ def slice_by_state(plan, cm, run_ids, out):
     if names - mentioned:
         # some changed attribute is only reached dynamically: keep all class users
         return run_ids
-    allowed |= textual
+    if cm.has_attrs:
+        # attribute-read coverage: tests that actually loaded one of the changed names
+        for n in names:
+            allowed |= cm.attr_readers(n)
+    else:
+        allowed |= textual
     keep = [t for t in run_ids if t in allowed]
     out.write("N " + ",".join(sorted(names))[:2000] + NL)
     for t in run_ids:
@@ -199,12 +204,20 @@ class Job:
         self.out = set(out)  # included without running
         self.ms, self.cpu, self.p = ms, cpu, p
         self.cpu_used = 0.0
+        self.first_fail_cpu = None
+
+    def cpu_spent(self):
+        return self.cpu_used + (proc_cpu(self.pid) if self.pid else 0.0)
 
     def maybe_stop(self):
         import policy
 
         cur = [self.ms[t] for t in self.out | self.failed]
-        ev = bool(self.failed) or any(self.p[t] >= 0.5 for t in self.out)
+        # keep verifying a little after the first failure: how broad the breakage is
+        # decides whether heavy tests are at risk
+        if self.failed and self.first_fail_cpu is None:
+            self.first_fail_cpu = self.cpu_spent()
+        ev = len(self.failed) >= 3 or (self.failed and self.cpu_spent() - self.first_fail_cpu > 3.0)
         if self.todo and policy.should_stop(cur, self.todo, self.cpu, self.ms, self.p, ev):
             self.out |= set(self.todo)
             self.todo = []
@@ -513,9 +526,9 @@ def main():
     failed_by = {j.plan.cid: j.failed for j in jobs}
     for cid, (H, p, sure) in heavies.items():
         sel = results[cid]
-        anyf = bool(failed_by.get(cid)) or bool(sure)
+        nf = len(failed_by.get(cid, ())) + len(sure)
         for h in sorted(H, key=lambda h: -ms[h]):
-            if policy.heavy_include(h, [ms[t] for t in sel], ms, anyf, P, why[cid].get(h, "file"), ncl[cid]):
+            if policy.heavy_include(h, [ms[t] for t in sel], ms, nf, P, why[cid].get(h, "file"), ncl[cid]):
                 sel.add(h)
 
     lines = []
