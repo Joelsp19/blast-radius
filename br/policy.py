@@ -75,8 +75,19 @@ def heavy_include(h, S_ms, ms, n_fail, P, kind="file", n_cheap_line=0):
     it is one of the few tests executing the changed line."""
     # verified on synthetic commits: executor tpcds failed alongside 30, 35, 35, 51, 56 cheap
     # failures and passed alongside 0, 0, 1, 1, 1, 2, 7; test_max_nodes passed alongside 7
+    import flags
+
     robust = h.rsplit("::", 1)[-1] in ROBUST
-    if n_fail >= 25:
+    if flags.OLD_HEAVY:
+        if n_fail >= 3:
+            p = P.p_heavy_dirty
+        elif n_fail >= 1:
+            p = 0.06 if kind == "line" else 0.01
+        elif kind == "line":
+            p = max(P.p_heavy_clean, 0.4 / (1 + n_cheap_line))
+        else:
+            p = P.p_heavy_clean
+    elif n_fail >= 25:
         p = P.p_heavy_dirty
     elif robust and kind != "line":
         # stress tests of plain SELECT parsing / generator construction: they break only

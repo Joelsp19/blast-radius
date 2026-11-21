@@ -20,6 +20,8 @@ import sys
 import time
 import types
 
+import flags
+
 APP = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, APP)
 
@@ -127,7 +129,7 @@ def slice_by_state(plan, cm, run_ids, out):
     # key-level: a changed dict / set attribute is only observed by tests that read it as a
     # whole or looked up one of the changed keys
     keytests = {}
-    if os.environ.get("BR_NOKEYS"):
+    if os.environ.get("BR_NOKEYS") or flags.NO_NEWSLICE:
         plan.orig_kfp = None
     newk = statediff.container_fingerprint(newc) if plan.orig_kfp is not None else {}
     for ck in set(plan.orig_fp) | set(newfp):
@@ -169,6 +171,8 @@ def slice_by_state(plan, cm, run_ids, out):
             continue  # also a class attribute: visible anywhere
         names.add(n)
     scoped = {n: sc for n, sc in mod_scope.items() if sc is not None and n not in cnames}
+    if flags.NO_NEWSLICE:
+        scoped = {}
     if DEBUG:
         log(plan.cid, "child fingerprinted", round(time.process_time(), 2))
     keep_kinds = {"line", "fixture"}
@@ -542,7 +546,7 @@ def main():
                 R.append(h)
             # fixture-item slicing: loop-over-fixture tests run on just the items that execute a
             # changed line (plus the code outside the loop)
-            if plan.mode != "fresh" and plan.touched_exact:
+            if plan.mode != "fresh" and plan.touched_exact and not flags.NO_NEWSLICE:
                 for t in sorted(set(D) | H | set(R)):
                     if plan.why.get(t) != "line" or t in plan.subsets:
                         continue
@@ -662,7 +666,7 @@ def main():
         sel = results[cid]
         nf = len(failed_by.get(cid, ())) + len(sure)
         for h in sorted(H, key=lambda h: -ms[h]):
-            if h in unobs.get(cid, ()):
+            if h in unobs.get(cid, ()) and not flags.NO_UNOBS:
                 continue
             if policy.heavy_include(h, [ms[t] for t in sel], ms, nf, P, why[cid].get(h, "file"), ncl[cid]):
                 sel.add(h)
