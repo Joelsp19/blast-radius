@@ -120,6 +120,10 @@ def _patch_duckdb():
     real = duckdb.connect
 
     def connect(*a, **k):
+        # one thread: same results, no thread pool per connection (cheaper, fork-friendly)
+        cfg = dict(k.get("config") or {})
+        cfg.setdefault("threads", 1)
+        k = dict(k, config=cfg)
         if _ZYGOTE[0]:
             return LazyConn(real, a, k)
         return real(*a, **k)
@@ -154,10 +158,35 @@ def import_test_module(mod):
 _class_state = {}  # cls -> None (ok) or exception
 
 
+# class fixtures that are expensive and only used by a few (heavy) tests: built on first use
+LAZY_SETUP = {
+    ("tests.test_executor", "TestExecutor"): (
+        "tpch_conn", "tpcds_conn", "tpch_tables", "tpcds_tables", "cache", "tpch_sqls", "tpcds_sqls"),
+}
+
+
+class _LazyAttr:
+    def __init__(self, name):
+        self.name = name
+
+    def __get__(self, obj, owner):
+        for n in LAZY_SETUP[(owner.__module__, owner.__name__)]:
+            if isinstance(owner.__dict__.get(n), _LazyAttr):
+                delattr(owner, n)
+        owner.setUpClass()  # assigns the real attributes
+        return getattr(owner, self.name)
+
+
 def class_setup(cls):
     """Run setUpClass once (lazily). Returns None or the exception."""
     if cls in _class_state:
         return _class_state[cls]
+    lazy = LAZY_SETUP.get((cls.__module__, cls.__name__))
+    if lazy and not getattr(cls, "__unittest_skip__", False):
+        for n in lazy:
+            setattr(cls, n, _LazyAttr(n))
+        _class_state[cls] = None
+        return None
     err = None
     if getattr(cls, "__unittest_skip__", False):
         _class_state[cls] = None

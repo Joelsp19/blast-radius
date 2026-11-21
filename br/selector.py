@@ -13,6 +13,7 @@
 import gc
 import json
 import os
+import re
 import select
 import signal
 import sys
@@ -91,6 +92,59 @@ def do_purge(plan, cm):
     FINDEX.clear()
 
 
+NL = chr(10)
+BOUND = chr(92) + "b"
+
+
+def slice_by_state(plan, cm, run_ids, out):
+    """Keep only tests that can observe a changed class/module attribute (see statediff)."""
+    import importlib
+
+    import statediff
+
+    mods = set(plan.slice_mods) | {k.split(":", 1)[0] for k in plan.orig_fp}
+    for mn in sorted(mods):
+        try:
+            importlib.import_module(mn)
+        except BaseException:  # noqa
+            return run_ids  # cannot compare: run everything
+    newc = statediff.class_keys(plan.slice_mods)
+    for k in plan.orig_fp:
+        if k not in newc:
+            mn, q = k.split(":", 1)
+            obj = sys.modules.get(mn)
+            for part in q.split("."):
+                obj = getattr(obj, part, None) if obj is not None else None
+            if isinstance(obj, type):
+                newc[k] = obj
+    names = statediff.changed_names(plan.orig_fp, statediff.fingerprint(newc))
+    names |= statediff.changed_names(plan.orig_mfp, statediff.module_fingerprint(plan.slice_mods))
+    keep_kinds = {"line", "fixture"}
+    allowed = {t for t in run_ids if plan.why.get(t) in keep_kinds}
+    hits = statediff.lines_mentioning(SG, names, cm.line_files())
+    textual = set()
+    for rel, lines in hits.items():
+        for ln in lines:
+            textual |= cm.line_tests(rel, ln)
+    mentioned = set()
+    for rel, lines in hits.items():
+        with open(os.path.join(SG, rel), encoding="utf-8") as f:
+            text = f.read()
+        for n in names:
+            if re.search(BOUND + re.escape(n) + BOUND, text):
+                mentioned.add(n)
+    if names - mentioned:
+        # some changed attribute is only reached dynamically: keep all class users
+        return run_ids
+    allowed |= textual
+    keep = [t for t in run_ids if t in allowed]
+    out.write("N " + ",".join(sorted(names))[:2000] + NL)
+    for t in run_ids:
+        if t not in allowed:
+            out.write("K " + t + NL)
+    return keep
+
+
 def child_main(plan, run_ids, wfd, cm):
     import harness
     import overlay
@@ -105,6 +159,8 @@ def child_main(plan, run_ids, wfd, cm):
         overlay.install(SG, plan.files, tmp)
         if plan.mode == "fresh":
             do_purge(plan, cm)
+            if getattr(plan, "orig_fp", None) is not None:
+                run_ids = slice_by_state(plan, cm, run_ids, out)
         else:
             do_swaps(plan)
     except BaseException as e:  # noqa
@@ -141,6 +197,7 @@ class Job:
         self.failed = set()
         self.out = set(out)  # included without running
         self.ms, self.cpu, self.p = ms, cpu, p
+        self.cpu_used = 0.0
 
     def maybe_stop(self):
         import policy
@@ -197,6 +254,13 @@ def handle_line(job, line):
             job.todo.remove(tid)
         job.cur = None
         job.cur_t = time.time()
+    elif line.startswith("K "):
+        tid = line[2:]
+        if tid in job.todo:
+            job.todo.remove(tid)
+    elif line.startswith("N "):
+        if DEBUG:
+            log(job.plan.cid, "changed state:", line[2:200])
     elif line.startswith("E "):
         log(job.plan.cid, "child setup error", line[2:])
 
@@ -207,7 +271,8 @@ def finish_child(job, killed):
     except OSError:
         pass
     try:
-        os.waitpid(job.pid, 0)
+        _, _, ru = os.wait4(job.pid, 0)
+        job.cpu_used += ru.ru_utime + ru.ru_stime
     except ChildProcessError:
         pass
     job.pid = None
@@ -256,11 +321,12 @@ def run_jobs(jobs, cm):
                 *lines, j.buf = j.buf.split(b"\n")
                 for ln in lines:
                     handle_line(j, ln.decode("utf-8", "replace"))
-                if j.cur is None and j.maybe_stop():
+                if any(ln.startswith(b"R ") for ln in lines) and j.maybe_stop():
                     try:
                         os.kill(j.pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
+                    j.cur = None  # the interrupted test is among those included
                     finish_child(j, killed=True)
                     active.remove(j)
                     continue
@@ -318,6 +384,7 @@ def main():
     cpu = {t: max(1, int(cm.cpu.get(t, ms[t] / 1000) * 1000)) for t in id2num}
     results = {}
     heavies = {}
+    why, ncl = {}, {}
     jobs = []
     for plan in plans:
         if plan.error:
@@ -332,10 +399,14 @@ def main():
         D, H, R = policy.decide_upfront(cands, p, ms, cpu, P)
         results[plan.cid] = set(D)
         heavies[plan.cid] = (H, p, {t for t in D if p[t] >= 0.5})
+        why[plan.cid] = plan.why
+        ncl[plan.cid] = sum(1 for t in cands if plan.why.get(t) == "line" and ms[t] < P.heavy_ms)
         if DEBUG:
             log(plan.cid, plan.mode, "cands", len(cands), "inc", len(D), "heavy", len(H), "run", len(R), plan.notes)
         if R:
-            timeouts = {c: max(10.0, 10 * cpu[c] / 1000 + 5) for c in R}
+            # a test that runs much slower than expected is killed and included: never a miss
+            k, base = (3.0, 3.0) if plan.mode == "fresh" else (2.0, 1.5)
+            timeouts = {c: k * cpu[c] / 1000 + base for c in R}
             j = Job(plan, R, timeouts, D, ms, cpu, p)
             if not j.maybe_stop():
                 jobs.append(j)
@@ -351,7 +422,7 @@ def main():
         need = sorted({t for j in jobs for t in j.todo})
         harness.preload(need, dialects=True, setups=True)
         build_findex()
-        log("zygote ready", len(need), "tests preloaded")
+        log("zygote ready", len(need), "tests preloaded, cpu", round(time.process_time(), 2))
         # swaps that cannot reach any live function -> purge mode
         for j in jobs:
             if j.plan.mode == "swap":
@@ -371,12 +442,26 @@ def main():
                         if not ok:
                             log(j.plan.cid, "unswappable", oc.co_qualname, "-> fresh")
                             j.plan.mode = "fresh"
+        import statediff
+
+        for j in jobs:
+            pl = j.plan
+            pl.orig_fp = pl.orig_mfp = None
+            if pl.mode == "fresh" and pl.slice_mods and not pl.no_slice:
+                try:
+                    for mn in pl.slice_mods:
+                        __import__(mn)
+                    pl.orig_fp = statediff.fingerprint(statediff.class_keys(pl.slice_mods))
+                    pl.orig_mfp = statediff.module_fingerprint(pl.slice_mods)
+                except BaseException as e:  # noqa
+                    log(pl.cid, "fingerprint failed", e)
+                    pl.orig_fp = None
         gc.freeze()
         run_jobs(jobs, cm)
         for j in jobs:
             results[j.plan.cid] |= j.failed | j.out
             if DEBUG:
-                log(j.plan.cid, "FAILED", sorted(j.failed)[:8], "INCLUDED", len(j.out))
+                log(j.plan.cid, j.plan.mode, f"cpu {j.cpu_used:.2f}", "FAILED", len(j.failed), "INCLUDED", len(j.out))
 
     # expensive tests are never run: include them when the expected miss cost is higher
     failed_by = {j.plan.cid: j.failed for j in jobs}
@@ -384,7 +469,7 @@ def main():
         sel = results[cid]
         anyf = bool(failed_by.get(cid)) or bool(sure)
         for h in sorted(H, key=lambda h: -ms[h]):
-            if policy.heavy_include(h, [ms[t] for t in sel], ms, anyf, P):
+            if policy.heavy_include(h, [ms[t] for t in sel], ms, anyf, P, why[cid].get(h, "file"), ncl[cid]):
                 sel.add(h)
 
     lines = []

@@ -65,7 +65,15 @@ def should_stop(S_ms, remaining, cpu, ms, p, evidence=True):
     return inc <= run
 
 
-def heavy_include(h, S_ms, ms, any_fail, P):
-    p = P.p_heavy_dirty if any_fail else P.p_heavy_clean
+def heavy_include(h, S_ms, ms, any_fail, P, kind="file", n_cheap_line=0):
+    """A heavy test is never run. Its failure probability: high if the commit already fails;
+    otherwise high when it is one of the few tests executing the changed line (the cheap
+    tests that also execute it all passed, which is evidence it is harmless)."""
+    if any_fail:
+        p = P.p_heavy_dirty
+    elif kind == "line":
+        p = max(P.p_heavy_clean, 0.4 / (1 + n_cheap_line))
+    else:
+        p = P.p_heavy_clean
     marg = pack_cost(S_ms + [ms[h]]) - pack_cost(S_ms)
     return p * MISS > marg

@@ -35,10 +35,18 @@ for cid, a in A.items():
 for f in sorted(glob.glob(os.path.join(BL, "work/m/*.json"))):
     cid = os.path.basename(f)[:-5]
     d = json.load(open(f))
+    if sum(1 for t in d["failed"] if d["cpu"].get(t) == 0) > 20:
+        continue  # label hit the timeout cap: unreliable
     text = open(f[:-5] + ".patch", encoding="utf-8", newline="").read()
-    commits.append((cid, text, set(d["failed"]), set(d["ran"])))
+    cpuL = d["cpu"]
+    truth = {t for t in d["failed"] if cpuL.get(t) is not None
+             and not (ms[t] >= 3000 and cpuL[t] > 2.5 * cpu[t] / 1000)}
+    ran = {t for t in d["ran"] if cpuL.get(t) is not None}
+    commits.append((cid, text, truth, ran))
 
 PRIOR = {"fixture": P.p_fixture, "line": P.p_line, "doc": 0.1, "type": P.p_type, "file": 0.02}
+import collections
+grp = collections.defaultdict(lambda: [0, 0, 0, 0])
 tot = {"cpu": 0, "out": 0, "miss": 0, "oracle": 0, "n": 0, "recall_miss": 0}
 for cid, text, truth, ran in commits:
     plan = an.analyze(cid, text)
@@ -68,7 +76,8 @@ for cid, text, truth, ran in commits:
     out |= F
     anyf = bool(F) or any(p[t] >= 0.5 for t in D)
     for h in sorted(H, key=lambda h: -ms[h]):
-        if policy.heavy_include(h, [ms[t] for t in out], ms, anyf, P):
+        ncl = sum(1 for t in cands if plan.why.get(t) == "line" and ms[t] < P.heavy_ms)
+        if policy.heavy_include(h, [ms[t] for t in out], ms, anyf, P, plan.why.get(h, "file"), ncl):
             out.add(h)
     miss = bool(truth - out)
     oc = policy.pack_cost([ms[t] for t in out])
@@ -77,6 +86,8 @@ for cid, text, truth, ran in commits:
     tot["miss"] += miss
     tot["oracle"] += oracle
     tot["n"] += 1
+    g = grp["sample" if ran is None else "mut"]
+    g[0] += spent; g[1] += oc; g[2] += miss; g[3] += oracle
     tot["recall_miss"] += bool(rmiss)
     if VERBOSE or miss or rmiss:
         print(f"{cid:10s} {plan.mode:5s} cands {len(cands):4d} truth {len(truth):3d} cpu {spent/1000:6.2f} "
@@ -86,3 +97,5 @@ n = tot["n"]
 print(f"n={n} cpu={tot['cpu']/1000:.1f} out={tot['out']/1000:.1f} misses={tot['miss']} "
       f"recall_misses={tot['recall_miss']} oracle={tot['oracle']/1000:.1f} "
       f"total={(tot['cpu'] + tot['out'])/1000 + 300 * tot['miss']:.1f}")
+for k, (c, o, mi, orc) in grp.items():
+    print(f"  {k}: cpu={c/1000:.1f} out={o/1000:.1f} misses={mi} oracle={orc/1000:.1f}")

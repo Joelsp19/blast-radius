@@ -5,6 +5,31 @@ Tests are referred to by their pytest id string."""
 import json
 
 
+class _LazySets:
+    """dict-like: key -> frozenset of test ids, built on first access."""
+
+    def __init__(self, ids, raw):
+        self.ids, self.raw, self.done = ids, raw, {}
+
+    def get(self, k, default=None):
+        r = self.done.get(k)
+        if r is None:
+            lst = self.raw.get(k)
+            if lst is None:
+                return default
+            r = self.done[k] = frozenset(self.ids[i] for i in lst)
+        return r
+
+    def __getitem__(self, k):
+        r = self.get(k)
+        if r is None:
+            raise KeyError(k)
+        return r
+
+    def __contains__(self, k):
+        return k in self.raw
+
+
 class CMap:
     def __init__(self, path):
         with open(path) as f:
@@ -12,17 +37,15 @@ class CMap:
         ids = d["tests"]
         self.ids = ids
         S = lambda lst: frozenset(ids[i] for i in lst)  # noqa
-        self.cover = {}
-        for k, lst in zip(d["keys"], d["cover"]):
-            self.cover[(k[0], k[1], k[2])] = S(lst)
+        self.cover = _LazySets(ids, {(k[0], k[1], k[2]): lst for k, lst in zip(d["keys"], d["cover"])})
         self.keys_by_file = {}
         for k in d["keys"]:
             self.keys_by_file.setdefault(k[0], []).append((k[0], k[1], k[2]))
-        self.opens = {p: S(v) for p, v in d["opens"].items()}
+        self.opens = _LazySets(ids, d["opens"])
         self.preload_opens = set(d["preload_opens"])
         self._pou = {p: S(v) for p, v in d.get("preload_open_users", {}).items()}
         self.preload_keys = {tuple(d["keys"][i]) for i in d["preload_keys"]}
-        self.types = {t: S(v) for t, v in d["types"].items()}
+        self.types = _LazySets(ids, d["types"])
         self.mro = d["mro"]
         self.enums = set(d.get("enums", []))
         self.importers = d.get("importers", {})  # module relpath -> [test files]
@@ -38,6 +61,9 @@ class CMap:
         self._sets = d.get("line_sets", [])
         self._lines = d.get("lines", {})
         self._set_cache = {}
+
+    def line_files(self):
+        return list(self._lines)
 
     def line_tests(self, path, line):
         si = self._lines.get(path, {}).get(str(line))
