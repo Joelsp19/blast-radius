@@ -30,8 +30,8 @@ SG = os.environ.get("SQLGLOT_DIR", "/opt/sqlglot")
 HEAVY = float(os.environ.get("BR_HEAVY", "3.0"))  # seconds; never run tests this slow
 PAR = int(os.environ.get("BR_PAR", "2"))
 DEBUG = os.environ.get("BR_DEBUG")
-HNF = int(os.environ.get("BR_HNF", "10"))
-HDT = int(os.environ.get("BR_HDT", "5000"))
+HNF = int(os.environ.get("BR_HNF", "3"))
+HDT = int(os.environ.get("BR_HDT", "3000"))
 T0 = time.time()
 
 
