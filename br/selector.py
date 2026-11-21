@@ -119,8 +119,30 @@ def slice_by_state(plan, cm, run_ids, out):
                 obj = getattr(obj, part, None) if obj is not None else None
             if isinstance(obj, type):
                 newc[k] = obj
-    cnames = statediff.changed_names(plan.orig_fp, statediff.fingerprint(newc))
+    newfp = statediff.fingerprint(newc)
+    cnames = statediff.changed_names(plan.orig_fp, newfp)
     names = set(cnames)
+    # key-level: a changed dict / set attribute is only observed by tests that read it as a
+    # whole or looked up one of the changed keys
+    keytests = {}
+    if os.environ.get("BR_NOKEYS"):
+        plan.orig_kfp = None
+    newk = statediff.container_fingerprint(newc) if plan.orig_kfp is not None else {}
+    for ck in set(plan.orig_fp) | set(newfp):
+        a, b = plan.orig_fp.get(ck), newfp.get(ck)
+        if a is None or b is None:
+            continue
+        for n in set(a) | set(b):
+            if a.get(n) == b.get(n):
+                continue
+            lab = ck + "." + n
+            r = None
+            if plan.orig_kfp is not None and lab in plan.orig_kfp and lab in newk:
+                r = cm.key_readers(lab, statediff.changed_keys(plan.orig_kfp[lab], newk[lab]))
+            if r is None:
+                keytests[n] = False
+            elif keytests.get(n, True) is not False:
+                keytests.setdefault(n, set()).update(r)
     newm = statediff.module_fingerprint(plan.slice_mods)
     # a module global is only visible through that module: its own code and its importers
     mod_scope = {}
@@ -178,7 +200,13 @@ def slice_by_state(plan, cm, run_ids, out):
         return run_ids
     for n in names:
         # both are over-approximations of the tests that read `n`; so is their intersection
-        allowed |= (textual[n] & cm.attr_readers(n)) if cm.has_attrs else textual[n]
+        obs = (textual[n] & cm.attr_readers(n)) if cm.has_attrs else textual[n]
+        kt = keytests.get(n)
+        if kt:
+            obs = obs & kt
+        elif kt is not None and kt is not False:
+            obs = set()  # no test reads the changed keys
+        allowed |= obs
     keep = [t for t in run_ids if t in allowed]
     out.write("N " + ",".join(sorted(names))[:2000] + NL)
     for t in run_ids:
@@ -583,12 +611,14 @@ def main():
 
         for j in jobs:
             pl = j.plan
-            pl.orig_fp = pl.orig_mfp = None
+            pl.orig_fp = pl.orig_mfp = pl.orig_kfp = None
             if pl.mode == "fresh" and pl.slice_mods and not pl.no_slice:
                 try:
                     for mn in pl.slice_mods:
                         __import__(mn)
-                    pl.orig_fp = statediff.fingerprint(statediff.class_keys(pl.slice_mods))
+                    ck = statediff.class_keys(pl.slice_mods)
+                    pl.orig_fp = statediff.fingerprint(ck)
+                    pl.orig_kfp = statediff.container_fingerprint(ck) if cm.key_labels else None
                     pl.orig_mfp = statediff.module_fingerprint(pl.slice_mods)
                 except BaseException as e:  # noqa
                     log(pl.cid, "fingerprint failed", e)
@@ -600,6 +630,7 @@ def main():
         for j in jobs:
             results[j.plan.cid] |= j.failed | j.out
             if DEBUG:
+                log("FAILEDSET", j.plan.cid, json.dumps(sorted(j.failed)), json.dumps(sorted(j.out)))
                 log(j.plan.cid, j.plan.mode, f"cpu {j.cpu_used:.2f} est {j.est_done / 1000:.2f}", "FAILED", len(j.failed), "INCLUDED", len(j.out))
 
     # expensive tests are never run: include them when the expected miss cost is higher

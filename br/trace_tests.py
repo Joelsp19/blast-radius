@@ -131,8 +131,10 @@ def main():
     res["preload_cpu"] = time.process_time() - t0
     print("preload cpu", res["preload_cpu"], file=sys.stderr)
 
+    snap = harness.snapshot_state()
     for t in tests:
         n = t["number"]
+        harness.restore_state(snap)
         begin()
         t0 = time.process_time()
         failed = harness.run_id(t["id"])

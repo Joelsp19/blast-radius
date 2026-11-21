@@ -65,6 +65,11 @@ class CMap:
         self._fc = {}
         self.subtests = d.get("subtests", {})
         self._d = {k: d[k] for k in ("attr_map", "attr_sets") if k in d}
+        self.key_labels = set(d.get("key_labels", ()))
+        self.key_unsafe = set(d.get("key_unsafe", ()))
+        self._kw = d.get("key_whole", {})
+        self._kk = d.get("key_keys", {})
+        self._ks = d.get("key_sets", [])
         self.has_lines = "lines" in d
         self._sets = d.get("line_sets", [])
         self._lines = d.get("lines", {})
@@ -80,6 +85,22 @@ class CMap:
         for path, ln in touched:
             q.update(st["lines"].get(path, {}).get(str(ln), ()))
         return sorted(q)
+
+    def key_readers(self, label, changed_keys):
+        """Tests that observed container `label` as a whole or looked up a changed key;
+        None if the container was not traced (or could be read around the recorder)."""
+        if label not in self.key_labels or label in self.key_unsafe:
+            return None
+        idx = set()
+        w = self._kw.get(label)
+        if w is not None:
+            idx.update(self._ks[w])
+        kk = self._kk.get(label, {})
+        for k in changed_keys:
+            j = kk.get(k)
+            if j is not None:
+                idx.update(self._ks[j])
+        return {self.ids[i] for i in idx}
 
     def fixture_slice(self, tid, touched):
         """Fixture-item slicing: (items executing any touched line, base hits?) or None."""

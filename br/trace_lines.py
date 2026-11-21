@@ -60,7 +60,9 @@ def main():
     harness.preload([t["id"] for t in tests])
     pre = end()
     res = {}
+    snap = harness.snapshot_state()
     for t in tests:
+        harness.restore_state(snap)
         begin()
         harness.run_id(t["id"])
         res[t["id"]] = end()

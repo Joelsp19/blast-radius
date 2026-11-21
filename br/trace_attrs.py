@@ -56,7 +56,9 @@ def main():
     tests = harness.load_tests_json(sys.argv[1])
     harness.preload([t["id"] for t in tests])
     res = {}
+    snap = harness.snapshot_state()
     for t in tests:
+        harness.restore_state(snap)
         cur.clear()
         mon.restart_events()
         mon.set_events(TOOL, mon.events.INSTRUCTION)

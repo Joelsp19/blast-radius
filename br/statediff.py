@@ -199,3 +199,32 @@ def lines_mentioning(root, names, files):
                 hits.add(i)
         out[rel] = hits
     return out
+
+
+def key_fp(k):
+    return hashlib.blake2b(_fp(k, 2, set()).encode(), digest_size=6).hexdigest()
+
+
+def container_fingerprint(classes):
+    """{label: {key digest: value digest}} of the dict / set attributes of each class."""
+    res = {}
+    for ck, c in classes.items():
+        for name, v in list(vars(c).items()):
+            if not isinstance(v, (dict, set, frozenset)):
+                continue
+            d = {}
+            try:
+                if isinstance(v, dict):
+                    for k, x in dict.items(v):
+                        d[key_fp(k)] = _digest(_fp(x, 6, set()))
+                else:
+                    for k in (set.__iter__(v) if isinstance(v, set) else frozenset.__iter__(v)):
+                        d[key_fp(k)] = "1"
+            except Exception:
+                continue
+            res[ck + "." + name] = d
+    return res
+
+
+def changed_keys(old, new):
+    return {k for k in set(old) | set(new) if old.get(k) != new.get(k)}

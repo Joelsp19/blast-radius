@@ -3,6 +3,7 @@
 usage: python tools/build_map.py trace.json extras.json sqlglot_checkout out.json"""
 
 import ast
+import glob
 import json
 import os
 import sys
@@ -222,7 +223,6 @@ def main():
         out["subtests"] = subs
         print("subtests", list(subs))
     # fixture-item slicing (trace_fixtures.py shards: fix*.json)
-    import glob
 
     for fp in sorted(glob.glob(os.path.join(os.path.dirname(sys.argv[1]), "fix[0-9]*.json"))):
         S = json.load(open(fp))
@@ -240,6 +240,39 @@ def main():
                 "lines": inv, "base": base,
                 "base_cpu": v["base_cpu"], "full_cpu": v["full_cpu"]}
         print("fixture subtests from", fp, len(S["subtests"]))
+    # key-level coverage of class containers (trace_keys.py shards: keys*.json)
+    kfiles = sorted(glob.glob(os.path.join(os.path.dirname(sys.argv[1]), "keys[0-9]*.json")))
+    if kfiles:
+        tix = {t: i for i, t in enumerate(out["tests"])}
+        whole, keyed, labels, unsafe = {}, {}, {}, set()
+        for fp in kfiles:
+            K = json.load(open(fp))
+            labels.update(K["labels"])
+            unsafe.update(K["unsafe"])
+            for tid, v in K["tests"].items():
+                i = tix.get(tid)
+                if i is None:
+                    continue
+                for lab in v["w"]:
+                    whole.setdefault(lab, set()).add(i)
+                for lab, k in v["k"]:
+                    keyed.setdefault(lab, {}).setdefault(k, set()).add(i)
+        ksets, kidx = [], {}
+
+        def intern(st):
+            key = tuple(sorted(st))
+            j = kidx.get(key)
+            if j is None:
+                j = kidx[key] = len(ksets)
+                ksets.append(list(key))
+            return j
+
+        out["key_labels"] = sorted(labels)
+        out["key_unsafe"] = sorted(unsafe)
+        out["key_whole"] = {lab: intern(st) for lab, st in whole.items()}
+        out["key_keys"] = {lab: {k: intern(st) for k, st in d.items()} for lab, d in keyed.items()}
+        out["key_sets"] = ksets
+        print("key coverage: labels", len(labels), "sets", len(ksets))
     blob = json.dumps(out, separators=(",", ":")).encode()
     if sys.argv[4].endswith(".gz"):
         import gzip

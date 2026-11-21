@@ -304,3 +304,53 @@ def run_id(tid, subset=None, attr=None):
         return run_case(klass, meth)
     finally:
         setattr(klass, attr, full)
+
+
+def snapshot_state():
+    """Build-time tracers: sqlglot's module-level containers and class namespaces after
+    preload. Restoring them before each traced test makes every test rebuild (and so be
+    charged for) the lazily built caches it uses, instead of only the first one."""
+    mods, classes = [], []
+    seen = set()
+    for mn, mod in list(sys.modules.items()):
+        if not (mn == "sqlglot" or mn.startswith("sqlglot.")) or mod is None:
+            continue
+        for v in list(vars(mod).values()):
+            if type(v) in (dict, set, list):
+                mods.append((v, type(v)(v)))
+            elif isinstance(v, type) and v.__module__.startswith("sqlglot") and v not in seen:
+                stack = [v]
+                while stack:
+                    c = stack.pop()
+                    if c in seen:
+                        continue
+                    seen.add(c)
+                    classes.append((c, dict(vars(c))))
+                    try:
+                        stack.extend(s for s in type.__subclasses__(c) if s.__module__.startswith("sqlglot"))
+                    except TypeError:
+                        pass
+    return mods, classes
+
+
+def restore_state(snap):
+    mods, classes = snap
+    for obj, copy in mods:
+        if isinstance(obj, list):
+            obj[:] = copy
+        else:
+            obj.clear()
+            obj.update(copy)
+    for c, ns in classes:
+        cur = vars(c)
+        for name in [n for n in cur if n not in ns]:
+            try:
+                delattr(c, name)
+            except (AttributeError, TypeError):
+                pass
+        for name, v in ns.items():
+            if name not in ("__dict__", "__weakref__") and cur.get(name, None) is not v:
+                try:
+                    setattr(c, name, v)
+                except (AttributeError, TypeError):
+                    pass
