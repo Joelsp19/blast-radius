@@ -296,6 +296,12 @@ def run_id(tid, subset=None, attr=None):
         return run_case(klass, meth)
     if attr == "__loader__":
         return loader_run(klass, meth, subset)
+    if attr == "__stmts__":
+        import stmtslice
+
+        if class_setup(klass) is not None:
+            return True
+        return stmtslice.run_sliced(klass, meth, subset, SG, run_case)
     if class_setup(klass) is not None:
         return True
     full = getattr(klass, attr)

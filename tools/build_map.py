@@ -240,6 +240,29 @@ def main():
                 "lines": inv, "base": base,
                 "base_cpu": v["base_cpu"], "full_cpu": v["full_cpu"]}
         print("fixture subtests from", fp, len(S["subtests"]))
+    # statement-level slicing (trace_stmts.py shards: stm*.json); fixture slicing wins
+    for fp in sorted(glob.glob(os.path.join(os.path.dirname(sys.argv[1]), "stm[0-9]*.json"))):
+        S = json.load(open(fp))
+        sfl = S["files"]
+        n = 0
+        for tid, v in S["subtests"].items():
+            if tid in out.get("subtests", {}):
+                continue
+            drop = set(v["droppable"])
+            inv = {}
+            for qi, pairs in enumerate(v["lines"]):
+                if qi not in drop:
+                    continue
+                for fi, ln in pairs:
+                    inv.setdefault(sfl[fi], {}).setdefault(str(ln), []).append(qi)
+            base = {}
+            for fi, ln in v["base"]:
+                base.setdefault(sfl[fi], []).append(ln)
+            out.setdefault("subtests", {})[tid] = {
+                "attr": "__stmts__", "cpu": v["cpu"], "lines": inv, "base": base,
+                "base_cpu": v["base_cpu"], "full_cpu": v["full_cpu"]}
+            n += 1
+        print("statement subtests from", fp, n)
     # key-level coverage of class containers (trace_keys.py shards: keys*.json)
     kfiles = sorted(glob.glob(os.path.join(os.path.dirname(sys.argv[1]), "keys[0-9]*.json")))
     if kfiles:

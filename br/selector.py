@@ -550,7 +550,13 @@ def main():
                 if not q and not base_hit:
                     continue  # coverage not reproduced in isolation: leave as is
                 st = cm.subtests[t]
-                est = int(1000 * (0.2 + 1.3 * (st["base_cpu"] + sum(st["cpu"][i] for i in q))))
+                part = st["base_cpu"] + sum(st["cpu"][i] for i in q)
+                if st["attr"] == "__stmts__":
+                    # traced per-statement cpu carries tracing overhead: rescale to the test
+                    tot = st["base_cpu"] + sum(st["cpu"])
+                    est = int(1000 * (0.1 + 1.2 * cm.cpu.get(t, tot) * part / max(tot, 1e-6)))
+                else:
+                    est = int(1000 * (0.15 + 1.3 * part))
                 full = jcpu[t]
                 if t in H:
                     if est > 0.8 * (ms[t] + 2000):
@@ -562,7 +568,7 @@ def main():
                 if jcpu is cpu:
                     jcpu = dict(cpu)
                 jcpu[t] = est
-                plan.subsets[t] = (q, "__loader__")
+                plan.subsets[t] = (q, st["attr"])
                 H.discard(t)
                 D.discard(t)
                 if t not in R:
