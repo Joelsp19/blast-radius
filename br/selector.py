@@ -465,6 +465,7 @@ def run_jobs(jobs, cm, deadline):
 def main():
     # keep stdout clean: anything printed while we work goes to stderr
     real_out = os.dup(1)
+    REAL_OUT[0] = real_out
     os.dup2(2, 1)
     from analyze import Analyzer
     from cmap import CMap
@@ -518,62 +519,69 @@ def main():
         # queries that execute the changed lines (or dropped if none does)
         plan.subsets = {}
         jcpu = cpu
-        for h in sorted(H):
-            if plan.why.get(h) != "line" or not plan.touched_exact or plan.mode == "fresh":
-                continue
-            q = cm.sub_queries(h, plan.touched)
-            if q is None:
-                continue
-            H.discard(h)
-            if not q:
-                continue
-            st = cm.subtests[h]
-            est = int(1000 * (0.5 + 1.3 * sum(st["cpu"][i] for i in q)))
-            if est > 0.8 * (ms[h] + 2000):
-                H.add(h)  # slicing does not pay: decide by policy as a heavy test
-                continue
-            if jcpu is cpu:
-                jcpu = dict(cpu)
-            jcpu[h] = est
-            plan.subsets[h] = (q, st["attr"])
-            R.append(h)
-        # fixture-item slicing: loop-over-fixture tests run on just the items that execute a
-        # changed line (plus the code outside the loop)
-        if plan.mode != "fresh" and plan.touched_exact:
-            for t in sorted(set(D) | H | set(R)):
-                if plan.why.get(t) != "line" or t in plan.subsets:
+        D0, H0, R0 = set(D), set(H), list(R)
+        try:
+            for h in sorted(H):
+                if plan.why.get(h) != "line" or not plan.touched_exact or plan.mode == "fresh":
                     continue
-                fs = cm.fixture_slice(t, plan.touched)
-                if fs is None:
+                q = cm.sub_queries(h, plan.touched)
+                if q is None:
                     continue
-                q, base_hit = fs
-                if not q and not base_hit:
-                    continue  # coverage not reproduced in isolation: leave as is
-                st = cm.subtests[t]
-                part = st["base_cpu"] + sum(st["cpu"][i] for i in q)
-                if st["attr"] == "__stmts__":
-                    # traced per-statement cpu carries tracing overhead: rescale to the test
-                    tot = st["base_cpu"] + sum(st["cpu"])
-                    est = int(1000 * (0.1 + 1.2 * cm.cpu.get(t, tot) * part / max(tot, 1e-6)))
-                else:
-                    est = int(1000 * (0.15 + 1.3 * part))
-                full = jcpu[t]
-                if t in H:
-                    if est > 0.8 * (ms[t] + 2000):
-                        continue
-                elif est >= 0.8 * full:
+                H.discard(h)
+                if not q:
                     continue
-                elif t in D and est > (1 - p[t]) * (ms[t] + 2000):
+                st = cm.subtests[h]
+                est = int(1000 * (0.5 + 1.3 * sum(st["cpu"][i] for i in q)))
+                if est > 0.8 * (ms[h] + 2000):
+                    H.add(h)  # slicing does not pay: decide by policy as a heavy test
                     continue
                 if jcpu is cpu:
                     jcpu = dict(cpu)
-                jcpu[t] = est
-                plan.subsets[t] = (q, st["attr"])
-                H.discard(t)
-                D.discard(t)
-                if t not in R:
-                    R.append(t)
-            R.sort(key=lambda t: (-p[t] / max(jcpu[t], 1), jcpu[t]))
+                jcpu[h] = est
+                plan.subsets[h] = (q, st["attr"])
+                R.append(h)
+            # fixture-item slicing: loop-over-fixture tests run on just the items that execute a
+            # changed line (plus the code outside the loop)
+            if plan.mode != "fresh" and plan.touched_exact:
+                for t in sorted(set(D) | H | set(R)):
+                    if plan.why.get(t) != "line" or t in plan.subsets:
+                        continue
+                    fs = cm.fixture_slice(t, plan.touched)
+                    if fs is None:
+                        continue
+                    q, base_hit = fs
+                    if not q and not base_hit:
+                        continue  # coverage not reproduced in isolation: leave as is
+                    st = cm.subtests[t]
+                    part = st["base_cpu"] + sum(st["cpu"][i] for i in q)
+                    if st["attr"] == "__stmts__":
+                        # traced per-statement cpu carries tracing overhead: rescale to the test
+                        tot = st["base_cpu"] + sum(st["cpu"])
+                        est = int(1000 * (0.1 + 1.2 * cm.cpu.get(t, tot) * part / max(tot, 1e-6)))
+                    else:
+                        est = int(1000 * (0.15 + 1.3 * part))
+                    full = jcpu[t]
+                    if t in H:
+                        if est > 0.8 * (ms[t] + 2000):
+                            continue
+                    elif est >= 0.8 * full:
+                        continue
+                    elif t in D and est > (1 - p[t]) * (ms[t] + 2000):
+                        continue
+                    if jcpu is cpu:
+                        jcpu = dict(cpu)
+                    jcpu[t] = est
+                    plan.subsets[t] = (q, st["attr"])
+                    H.discard(t)
+                    D.discard(t)
+                    if t not in R:
+                        R.append(t)
+                R.sort(key=lambda t: (-p[t] / max(jcpu[t], 1), jcpu[t]))
+        except Exception as e:  # noqa
+            log(plan.cid, "slicing failed", repr(e))
+            D, H, R = D0, H0, R0
+            plan.subsets = {}
+            jcpu = cpu
         results[plan.cid] = set(D)
         heavies[plan.cid] = (H, p, {t for t in D if p[t] >= 0.5})
         why[plan.cid] = plan.why
@@ -665,10 +673,38 @@ def main():
         items = [(id2num[t], ms[t]) for t in sel if t in id2num]
         lines.append(json.dumps({"commit": cid, "workers": pack(items)}))
     sys.stdout.flush()
+    OUT_DONE[0] = True
     with os.fdopen(real_out, "w", encoding="utf-8") as f:
         f.write("".join(line + "\n" for line in lines))
     log("done")
 
 
+def fallback(e):
+    """Last resort if anything above failed before writing: a valid, conservative answer
+    (every test for every commit)."""
+    import traceback
+
+    traceback.print_exc()
+    if OUT_DONE[0]:
+        return
+    try:
+        with open(os.path.join(DATA, "tests.json")) as f:
+            tests = json.load(f)["tests"]
+        items = [(t["number"], round(t["seconds"] * 1000)) for t in tests]
+        workers = pack(items)
+        cids = sorted(f[:-6] for f in os.listdir(os.path.join(DATA, "commits")) if f.endswith(".patch"))
+        fd = REAL_OUT[0] if REAL_OUT[0] is not None else 1
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("".join(json.dumps({"commit": c, "workers": workers}) + NL for c in cids))
+    except BaseException:  # noqa
+        traceback.print_exc()
+
+
+REAL_OUT = [None]
+OUT_DONE = [False]
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BaseException as e:  # noqa
+        fallback(e)
