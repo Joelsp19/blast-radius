@@ -1,0 +1,71 @@
+"""Decision policy: which candidate tests to run, include blindly, or skip.
+
+Cost model (per commit):  pack_cost(output) + CPU spent verifying + 300 * P(miss).
+"""
+
+MISS = 300_000  # ms
+WORKER = 2_000  # ms
+
+
+def pack_cost(ms_list):
+    """min over w of LPT max-load + 2s*w (0 for empty)."""
+    if not ms_list:
+        return 0
+    items = sorted(ms_list, reverse=True)
+    best = None
+    for w in range(1, min(8, len(items)) + 1):
+        loads = [0] * w
+        for x in items:
+            i = loads.index(min(loads))
+            loads[i] += x
+        c = max(loads) + WORKER * w
+        if best is None or c < best:
+            best = c
+    return best
+
+
+class Params:
+    heavy_ms = 3000  # never run tests at least this slow
+    p_fixture = 0.9  # P(fail) for a test reading a changed fixture
+    p_line = 0.25  # P(fail) for a test executing a changed line
+    p_type = 0.05  # P(fail) for a class-body change user
+    p_heavy_clean = 0.02  # heavy candidate, nothing else failed
+    p_heavy_dirty = 0.5  # heavy candidate, something else failed
+    cpu_factor = 1.0  # harness cpu vs estimate
+
+
+def decide_upfront(cands, p, ms, cpu, P):
+    """Split candidates: include directly (D), heavy (H), run list (ordered)."""
+    D, H, R = set(), set(), []
+    for t in cands:
+        if ms[t] >= P.heavy_ms:
+            H.add(t)
+            continue
+        # include blindly when running is expected to cost more than including
+        if cpu[t] * P.cpu_factor > (1 - p[t]) * (ms[t] + WORKER):
+            D.add(t)
+        else:
+            R.append(t)
+    # most likely to fail per cpu second first: find failures early
+    R.sort(key=lambda t: (-p[t] / max(cpu[t], 1), cpu[t]))
+    return D, H, R
+
+
+def should_stop(S_ms, remaining, cpu, ms, p, evidence=True):
+    """Stop running if including everything left is cheaper than verifying it.
+    Only once the commit is known (or nearly sure) to fail: otherwise keep trying to
+    prove it clean, which is worth the whole output cost."""
+    if not remaining:
+        return True
+    if not S_ms or not evidence:
+        return False
+    base = pack_cost(S_ms)
+    inc = pack_cost(S_ms + [ms[t] for t in remaining]) - base
+    run = sum(cpu[t] for t in remaining)
+    return inc <= run
+
+
+def heavy_include(h, S_ms, ms, any_fail, P):
+    p = P.p_heavy_dirty if any_fail else P.p_heavy_clean
+    marg = pack_cost(S_ms + [ms[h]]) - pack_cost(S_ms)
+    return p * MISS > marg
