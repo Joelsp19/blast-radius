@@ -39,8 +39,11 @@ for f in sorted(glob.glob(os.path.join(BL, "work/m/*.json"))):
         continue  # label hit the timeout cap: unreliable
     text = open(f[:-5] + ".patch", encoding="utf-8", newline="").read()
     cpuL = d["cpu"]
+    # the labelers ran under a 1.2 GB cap: heavy-test failures are only trusted when
+    # re-verified in isolation (tools/verify.py)
+    VERIFIED = {"m1x032": {"tests/test_executor.py::TestExecutor::test_execute_tpcds"}}
     truth = {t for t in d["failed"] if cpuL.get(t) is not None
-             and not (ms[t] >= 3000 and cpuL[t] > 2.5 * cpu[t] / 1000)}
+             and (ms[t] < 3000 or t in VERIFIED.get(cid, ()))}
     ran = {t for t in d["ran"] if cpuL.get(t) is not None}
     commits.append((cid, text, truth, ran))
 
@@ -60,17 +63,36 @@ for cid, text, truth, ran in commits:
     rmiss = truth - cands
     p = {t: PRIOR[plan.why.get(t, "file")] for t in cands}
     D, H, R = policy.decide_upfront(cands, p, ms, cpu, P)
+    jc = cpu
+    for h in sorted(H):
+        if plan.why.get(h) != "line" or not plan.touched_exact or plan.mode == "fresh":
+            continue
+        q = cm.sub_queries(h, plan.touched)
+        if q is None:
+            continue
+        H.discard(h)
+        if not q:
+            continue
+        est = int(1000 * (0.5 + 1.3 * sum(cm.subtests[h]["cpu"][i] for i in q)))
+        if est > 0.8 * (ms[h] + 2000):
+            H.add(h)
+            continue
+        if jc is cpu:
+            jc = dict(cpu)
+        jc[h] = est
+        R.append(h)
+    cpu_c = jc
     F = set()
     spent = 0
     out = set(D)
     remaining = list(R)
     while remaining:
         ev = bool(F) or any(p[t] >= 0.5 for t in D)
-        if policy.should_stop([ms[t] for t in out | F], remaining, cpu, ms, p, ev):
+        if policy.should_stop([ms[t] for t in out | F], remaining, cpu_c, ms, p, ev):
             out |= set(remaining)
             break
         t = remaining.pop(0)
-        spent += cpu[t]
+        spent += cpu_c[t]
         if t in truth:
             F.add(t)
     out |= F

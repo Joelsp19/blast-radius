@@ -188,6 +188,19 @@ def main():
         for fi, ln in L["preload"]:
             out["preload_lines"].setdefault(flist[fi], []).append(ln)
         print("line sets", len(sets), "files", len(lines))
+    sub_path = os.path.join(os.path.dirname(sys.argv[1]), "subtests.json")
+    if os.path.exists(sub_path):
+        S = json.load(open(sub_path))
+        sfl = S["files"]
+        subs = {}
+        for tid, v in S["subtests"].items():
+            inv = {}
+            for qi, pairs in enumerate(v["lines"]):
+                for fi, ln in pairs:
+                    inv.setdefault(sfl[fi], {}).setdefault(str(ln), []).append(qi)
+            subs[tid] = {"attr": v["attr"], "cpu": v["cpu"], "lines": inv}
+        out["subtests"] = subs
+        print("subtests", list(subs))
     with open(sys.argv[4], "w") as f:
         json.dump(out, f, separators=(",", ":"))
     print("keys", len(keys), "types", len(types), "size", os.path.getsize(sys.argv[4]))

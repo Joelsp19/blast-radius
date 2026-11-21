@@ -251,8 +251,17 @@ def preload(ids, dialects=True, setups=True):
             class_setup(klass)
 
 
-def run_id(tid):
+def run_id(tid, subset=None, attr=None):
     klass, meth = get_class(tid)
     if klass is None:
         return True
-    return run_case(klass, meth)
+    if subset is None:
+        return run_case(klass, meth)
+    if class_setup(klass) is not None:
+        return True
+    full = getattr(klass, attr)
+    setattr(klass, attr, [full[i] for i in subset])
+    try:
+        return run_case(klass, meth)
+    finally:
+        setattr(klass, attr, full)

@@ -179,7 +179,8 @@ def child_main(plan, run_ids, wfd, cm):
     for tid in run_ids:
         out.write(f"S {tid}\n")
         try:
-            failed = harness.run_id(tid)
+            sub = getattr(plan, "subsets", {}).get(tid)
+            failed = harness.run_id(tid, *sub) if sub else harness.run_id(tid)
         except BaseException:  # noqa
             failed = True
         out.write(f"R {int(failed)} {tid}\n")
@@ -281,8 +282,14 @@ def finish_child(job, killed):
         job.failed |= set(job.todo)
         job.todo = []
         job.cur = None
+    if job.cur is not None and killed:
+        # too slow: include it (never a miss) but it is no evidence the commit fails
+        job.out.add(job.cur)
+        if job.cur in job.todo:
+            job.todo.remove(job.cur)
+        job.cur = None
     if job.cur is not None:
-        # the running test hung or crashed the child: it fails
+        # the running test crashed the child: it fails
         job.failed.add(job.cur)
         if job.cur in job.todo:
             job.todo.remove(job.cur)
@@ -293,10 +300,24 @@ def finish_child(job, killed):
         job.failed.add(t)
 
 
-def run_jobs(jobs, cm):
+def run_jobs(jobs, cm, deadline):
     pending = list(jobs)
     active = []
     while pending or active:
+        if time.time() > deadline:
+            # out of wall time: stop verifying, include whatever is left (never a miss)
+            log("deadline reached: including remaining candidates")
+            for j in active:
+                try:
+                    os.kill(j.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                j.cur = None
+                finish_child(j, killed=True)
+            for j in active + pending:
+                j.out |= set(j.todo)
+                j.todo = []
+            return
         while pending and len(active) < PAR:
             j = pending.pop(0)
             if not j.todo:
@@ -397,6 +418,29 @@ def main():
         cands = {c for c in plan.cands if c in id2num} | unknown
         p = {c: PRIOR[plan.why.get(c, "file")] for c in cands}
         D, H, R = policy.decide_upfront(cands, p, ms, cpu, P)
+        # sub-test slicing: a heavy test made of independent queries is run on just the
+        # queries that execute the changed lines (or dropped if none does)
+        plan.subsets = {}
+        jcpu = cpu
+        for h in sorted(H):
+            if plan.why.get(h) != "line" or not plan.touched_exact or plan.mode == "fresh":
+                continue
+            q = cm.sub_queries(h, plan.touched)
+            if q is None:
+                continue
+            H.discard(h)
+            if not q:
+                continue
+            st = cm.subtests[h]
+            est = int(1000 * (0.5 + 1.3 * sum(st["cpu"][i] for i in q)))
+            if est > 0.8 * (ms[h] + 2000):
+                H.add(h)  # slicing does not pay: decide by policy as a heavy test
+                continue
+            if jcpu is cpu:
+                jcpu = dict(cpu)
+            jcpu[h] = est
+            plan.subsets[h] = (q, st["attr"])
+            R.append(h)
         results[plan.cid] = set(D)
         heavies[plan.cid] = (H, p, {t for t in D if p[t] >= 0.5})
         why[plan.cid] = plan.why
@@ -406,8 +450,8 @@ def main():
         if R:
             # a test that runs much slower than expected is killed and included: never a miss
             k, base = (3.0, 3.0) if plan.mode == "fresh" else (2.0, 1.5)
-            timeouts = {c: k * cpu[c] / 1000 + base for c in R}
-            j = Job(plan, R, timeouts, D, ms, cpu, p)
+            timeouts = {c: k * jcpu[c] / 1000 + base for c in R}
+            j = Job(plan, R, timeouts, D, ms, jcpu, p)
             if not j.maybe_stop():
                 jobs.append(j)
             else:
@@ -457,7 +501,9 @@ def main():
                     log(pl.cid, "fingerprint failed", e)
                     pl.orig_fp = None
         gc.freeze()
-        run_jobs(jobs, cm)
+        # practice: 3 min for the batch, final: 4.5 min for ~1.5x commits (~6 s per commit)
+        budget = float(os.environ.get("BR_BUDGET", min(230.0, max(100.0, 4.8 * len(cids)))))
+        run_jobs(jobs, cm, T0 + budget)
         for j in jobs:
             results[j.plan.cid] |= j.failed | j.out
             if DEBUG:

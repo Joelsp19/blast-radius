@@ -57,10 +57,22 @@ class CMap:
         self.doc_tests = frozenset(t for t in ids if t.startswith("tests/test_docs.py::"))
         self.cpu = dict(zip(ids, d.get("cpu", [0] * len(ids))))
         self._fc = {}
+        self.subtests = d.get("subtests", {})
         self.has_lines = "lines" in d
         self._sets = d.get("line_sets", [])
         self._lines = d.get("lines", {})
         self._set_cache = {}
+
+    def sub_queries(self, tid, touched):
+        """Indices of the sub-test queries of `tid` executing any (path, line) in touched,
+        or None if `tid` cannot be sliced."""
+        st = self.subtests.get(tid)
+        if st is None:
+            return None
+        q = set()
+        for path, ln in touched:
+            q.update(st["lines"].get(path, {}).get(str(ln), ()))
+        return sorted(q)
 
     def line_files(self):
         return list(self._lines)

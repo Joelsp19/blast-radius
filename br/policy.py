@@ -26,9 +26,9 @@ def pack_cost(ms_list):
 
 class Params:
     heavy_ms = 3000  # never run tests at least this slow
-    p_fixture = 0.9  # P(fail) for a test reading a changed fixture
-    p_line = 0.25  # P(fail) for a test executing a changed line
-    p_type = 0.05  # P(fail) for a class-body change user
+    p_fixture = 0.95  # calibrated (0.96)
+    p_line = 0.45  # calibrated on sample + synthetic commits (0.51)
+    p_type = 0.02  # calibrated (0.022)
     p_heavy_clean = 0.02  # heavy candidate, nothing else failed
     p_heavy_dirty = 0.5  # heavy candidate, something else failed
     cpu_factor = 1.0  # harness cpu vs estimate

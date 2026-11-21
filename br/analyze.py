@@ -28,6 +28,8 @@ class Plan:
         self.notes = []
         self.error = None
         self.why = {}  # test id -> kind with the highest prior
+        self.touched = set()  # (path, line) of statements touched by function-body changes
+        self.touched_exact = True  # False when some change fell back to function coverage
         self.slice_mods = set()  # modules whose class/module bodies changed (state-diff slicing)
         self.no_slice = False  # some change other than body changes forces fresh mode
 
@@ -112,6 +114,7 @@ class Analyzer:
 
     def analyze(self, cid, text):
         plan = Plan(cid)
+        self._plan = plan
         m = self.m
         try:
             files = patchlib.parse_patch(text)
@@ -250,39 +253,60 @@ class Analyzer:
         Falls back to function-level coverage when unsure."""
         m = self.m
         hunks = getattr(self, "_hunks", None)
+        plan = self._plan
         if not m.has_lines or not hunks:
+            plan.touched_exact = False
             return set(fallback)
         stmts = self._stmts(path, src)
         lines = {ln for ln in (l for l, *_ in oc.co_lines() if False)}  # placeholder
         code_lines = {l for _, _, l in oc.co_lines() if l is not None}
         if not code_lines:
+            plan.touched_exact = False
             return set(fallback)
         lo, hi = min(code_lines), max(code_lines)
         touched = set()
+        src_lines = src.split("\n")
+
+        def stmt_line(ln, step):
+            # nearest line in direction `step` that belongs to a statement
+            while 1 <= ln <= len(src_lines):
+                if self._span(stmts, ln) is not None:
+                    return ln
+                ln += step
+            return None
+
         for ostart, olen, body, _ in hunks:
             k = ostart if olen > 0 else ostart + 1
+            prev = " "
             for tag, _t in body:
                 if tag == " ":
                     k += 1
                 elif tag == "-":
                     touched.add(k)
                     k += 1
-                else:
-                    touched.add(k - 1)
-                    touched.add(k)
+                elif prev == " ":
+                    # pure insertion between old lines k-1 and k: neighbouring statements
+                    for ln in (stmt_line(k - 1, -1), stmt_line(k, 1)):
+                        if ln is not None:
+                            touched.add(ln)
+                prev = tag if tag != "+" or prev == " " else prev
         touched = {t for t in touched if oc.co_firstlineno <= t <= hi + 1}
         if not touched:
+            plan.touched_exact = False
             return set(fallback)
         res = set()
         for t in touched:
             if t <= oc.co_firstlineno or t < lo:
                 # def line / decorators / signature: be conservative
+                plan.touched_exact = False
                 return set(fallback)
             span = self._span(stmts, t)
             if span is None:
+                plan.touched_exact = False
                 return set(fallback)
             for ln in range(span[0], span[1] + 1):
                 res |= m.line_tests(path, ln)
+                plan.touched.add((path, ln))
         return res
 
     def _stmts(self, path, src):
