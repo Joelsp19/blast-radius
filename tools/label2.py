@@ -58,7 +58,7 @@ def main():
     heavy = {t["id"] for t in tj if t["seconds"] >= 3.0}
     from cmap import CMap
     from analyze import Analyzer
-    an = Analyzer("/opt/sqlglot", CMap("/br/map.json"))
+    an = Analyzer("/opt/sqlglot", CMap("/br/map.json.gz"))
     for p in sorted(glob.glob(os.path.join(mdir, "*.patch"))):
         cid = os.path.basename(p)[:-6]
         out = os.path.join(mdir, cid + ".json")

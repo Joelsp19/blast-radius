@@ -144,6 +144,39 @@ class Errored(Exception):
     pass
 
 
+# fixture-item slicing: tests that loop over load_sql_fixture(_pair)s items are run on a
+# subset of the items (counted in order across all loader calls of one test run)
+_LOADER = {"on": False, "filter": None, "n": 0}
+LOADERS = ("load_sql_fixture_pairs", "load_sql_fixtures")
+
+
+def _wrap_loader(fn):
+    def wrapped(*a, **k):
+        if not _LOADER["on"]:
+            yield from fn(*a, **k)
+            return
+        for item in fn(*a, **k):
+            i = _LOADER["n"]
+            _LOADER["n"] = i + 1
+            f = _LOADER["filter"]
+            if f is None or i in f:
+                yield item
+
+    wrapped._br = True
+    return wrapped
+
+
+def loader_run(klass, meth, subset):
+    """Run a test with the loader filtered to `subset` (None: all items, counted)."""
+    if class_setup(klass) is not None:
+        return True
+    _LOADER.update(on=True, filter=None if subset is None else set(subset), n=0)
+    try:
+        return run_case(klass, meth)
+    finally:
+        _LOADER["on"] = False
+
+
 def import_test_module(mod):
     """Import a test module; return (module, None) or (None, exception)."""
     try:
@@ -152,6 +185,10 @@ def import_test_module(mod):
         return None, e
     if hasattr(m, "ProcessPoolExecutor"):
         m.ProcessPoolExecutor = SyncExecutor
+    for name in LOADERS:
+        f = getattr(m, name, None)
+        if callable(f) and not getattr(f, "_br", False):
+            setattr(m, name, _wrap_loader(f))
     return m, None
 
 
@@ -257,6 +294,8 @@ def run_id(tid, subset=None, attr=None):
         return True
     if subset is None:
         return run_case(klass, meth)
+    if attr == "__loader__":
+        return loader_run(klass, meth, subset)
     if class_setup(klass) is not None:
         return True
     full = getattr(klass, attr)

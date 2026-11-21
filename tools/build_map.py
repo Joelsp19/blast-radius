@@ -221,8 +221,32 @@ def main():
             subs[tid] = {"attr": v["attr"], "cpu": v["cpu"], "lines": inv}
         out["subtests"] = subs
         print("subtests", list(subs))
-    with open(sys.argv[4], "w") as f:
-        json.dump(out, f, separators=(",", ":"))
+    # fixture-item slicing (trace_fixtures.py shards: fix*.json)
+    import glob
+
+    for fp in sorted(glob.glob(os.path.join(os.path.dirname(sys.argv[1]), "fix[0-9]*.json"))):
+        S = json.load(open(fp))
+        sfl = S["files"]
+        for tid, v in S["subtests"].items():
+            inv = {}
+            for qi, pairs in enumerate(v["lines"]):
+                for fi, ln in pairs:
+                    inv.setdefault(sfl[fi], {}).setdefault(str(ln), []).append(qi)
+            base = {}
+            for fi, ln in v["base"]:
+                base.setdefault(sfl[fi], []).append(ln)
+            out.setdefault("subtests", {})[tid] = {
+                "attr": v["attr"], "cpu": [round(max(0.0, c - v["base_cpu"]), 4) for c in v["cpu"]],
+                "lines": inv, "base": base,
+                "base_cpu": v["base_cpu"], "full_cpu": v["full_cpu"]}
+        print("fixture subtests from", fp, len(S["subtests"]))
+    blob = json.dumps(out, separators=(",", ":")).encode()
+    if sys.argv[4].endswith(".gz"):
+        import gzip
+
+        blob = gzip.compress(blob, 9, mtime=0)
+    with open(sys.argv[4], "wb") as f:
+        f.write(blob)
     print("keys", len(keys), "types", len(types), "size", os.path.getsize(sys.argv[4]))
 
 

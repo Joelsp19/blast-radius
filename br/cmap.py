@@ -32,8 +32,14 @@ class _LazySets:
 
 class CMap:
     def __init__(self, path):
-        with open(path) as f:
-            d = json.load(f)
+        if path.endswith(".gz"):
+            import gzip
+
+            with gzip.open(path, "rb") as f:
+                d = json.loads(f.read())
+        else:
+            with open(path) as f:
+                d = json.load(f)
         ids = d["tests"]
         self.ids = ids
         S = lambda lst: frozenset(ids[i] for i in lst)  # noqa
@@ -68,12 +74,28 @@ class CMap:
         """Indices of the sub-test queries of `tid` executing any (path, line) in touched,
         or None if `tid` cannot be sliced."""
         st = self.subtests.get(tid)
-        if st is None:
+        if st is None or "base" in st:
             return None
         q = set()
         for path, ln in touched:
             q.update(st["lines"].get(path, {}).get(str(ln), ()))
         return sorted(q)
+
+    def fixture_slice(self, tid, touched):
+        """Fixture-item slicing: (items executing any touched line, base hits?) or None."""
+        st = self.subtests.get(tid)
+        if st is None or "base" not in st:
+            return None
+        q = set()
+        base_hit = False
+        for path, ln in touched:
+            q.update(st["lines"].get(path, {}).get(str(ln), ()))
+            if not base_hit:
+                bl = st.get("_bs", {}).get(path)
+                if bl is None:
+                    bl = st.setdefault("_bs", {})[path] = set(st["base"].get(path, ()))
+                base_hit = ln in bl
+        return sorted(q), base_hit
 
     @property
     def has_attrs(self):

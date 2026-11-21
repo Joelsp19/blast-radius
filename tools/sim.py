@@ -24,7 +24,7 @@ for a in sys.argv[1:]:
     setattr(P, k, float(v))
 VERBOSE = os.environ.get("V")
 
-cm = CMap(os.path.join(HERE, "..", "br", "map.json"))
+cm = CMap(os.path.join(HERE, "..", "br", "map.json.gz"))
 an = Analyzer(os.path.join(BL, "sg"), cm)
 
 commits = []

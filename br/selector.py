@@ -117,8 +117,32 @@ def slice_by_state(plan, cm, run_ids, out):
                 obj = getattr(obj, part, None) if obj is not None else None
             if isinstance(obj, type):
                 newc[k] = obj
-    names = statediff.changed_names(plan.orig_fp, statediff.fingerprint(newc))
-    names |= statediff.changed_names(plan.orig_mfp, statediff.module_fingerprint(plan.slice_mods))
+    cnames = statediff.changed_names(plan.orig_fp, statediff.fingerprint(newc))
+    names = set(cnames)
+    newm = statediff.module_fingerprint(plan.slice_mods)
+    # a module global is only visible through that module: its own code and its importers
+    mod_scope = {}
+    for mn in set(plan.orig_mfp) | set(newm):
+        a, b = plan.orig_mfp.get(mn, {}), newm.get(mn, {})
+        rel = None
+        for cand in (mn.replace(".", "/") + ".py", mn.replace(".", "/") + "/__init__.py"):
+            if os.path.exists(os.path.join(SG, cand)):
+                rel = cand
+                break
+        for n in set(a) | set(b):
+            if a.get(n) != b.get(n):
+                if rel is None:
+                    mod_scope[n] = None
+                elif mod_scope.get(n, 0) is not None:
+                    sc = mod_scope.setdefault(n, set())
+                    sc.add(rel)
+                    sc.update(cm.mod_importers.get(rel, ()))
+                    sc.update(cm.importers.get(rel, ()))
+    for n, sc in mod_scope.items():
+        if n in names:
+            continue  # also a class attribute: visible anywhere
+        names.add(n)
+    scoped = {n: sc for n, sc in mod_scope.items() if sc is not None and n not in cnames}
     keep_kinds = {"line", "fixture"}
     allowed = {t for t in run_ids if plan.why.get(t) in keep_kinds}
     hits = statediff.lines_mentioning(SG, names, cm.line_files())
@@ -131,9 +155,22 @@ def slice_by_state(plan, cm, run_ids, out):
             txt = src_lines[ln - 1] if ln - 1 < len(src_lines) else ""
             tests = cm.line_tests(rel, ln)
             for n in names:
+                if n in scoped and rel not in scoped[n]:
+                    continue
                 if re.search(BOUND + re.escape(n) + BOUND, txt):
                     mentioned.add(n)
                     textual[n] |= tests
+    for n in scoped:
+        if n not in mentioned:
+            pat = re.compile(BOUND + re.escape(n) + BOUND)
+            for rel in scoped[n]:
+                try:
+                    with open(os.path.join(SG, rel), encoding="utf-8") as f:
+                        if pat.search(f.read()):
+                            mentioned.add(n)  # only on lines no test executes
+                            break
+                except OSError:
+                    pass
     if names - mentioned:
         # some changed attribute is only reached dynamically: keep all class users
         return run_ids
@@ -202,6 +239,7 @@ class Job:
         self.out = set(out)  # included without running
         self.ms, self.cpu, self.p = ms, cpu, p
         self.cpu_used = 0.0
+        self.est_done = 0
         self.first_fail_cpu = None
 
     def cpu_spent(self):
@@ -213,9 +251,10 @@ class Job:
         cur = [self.ms[t] for t in self.out | self.failed]
         # keep verifying a little after the first failure: how broad the breakage is
         # decides whether heavy tests are at risk
+        # (estimated, not measured, cpu: decisions must not depend on machine noise)
         if self.failed and self.first_fail_cpu is None:
-            self.first_fail_cpu = self.cpu_spent()
-        ev = len(self.failed) >= 3 or (self.failed and self.cpu_spent() - self.first_fail_cpu > 3.0)
+            self.first_fail_cpu = self.est_done
+        ev = len(self.failed) >= 3 or (self.failed and self.est_done - self.first_fail_cpu > 3000)
         if self.todo and policy.should_stop(cur, self.todo, self.cpu, self.ms, self.p, ev):
             self.out |= set(self.todo)
             self.todo = []
@@ -264,6 +303,7 @@ def handle_line(job, line):
             job.failed.add(tid)
         if tid in job.todo:
             job.todo.remove(tid)
+        job.est_done += job.cpu.get(tid, 0) if job.cpu else 0
         job.cur = None
         job.cur_t = time.time()
     elif line.startswith("K "):
@@ -389,7 +429,7 @@ def main():
     tests = tj["tests"]
     id2num = {t["id"]: t["number"] for t in tests}
     ms = {t["id"]: round(t["seconds"] * 1000) for t in tests}
-    cm = CMap(os.path.join(APP, "map.json"))
+    cm = CMap(os.path.join(APP, "map.json.gz"))
     unknown = set(id2num) - set(cm.ids)
     an = Analyzer(SG, cm)
     cdir = os.path.join(DATA, "commits")
@@ -452,6 +492,37 @@ def main():
             jcpu[h] = est
             plan.subsets[h] = (q, st["attr"])
             R.append(h)
+        # fixture-item slicing: loop-over-fixture tests run on just the items that execute a
+        # changed line (plus the code outside the loop)
+        if plan.mode != "fresh" and plan.touched_exact:
+            for t in sorted(set(D) | H | set(R)):
+                if plan.why.get(t) != "line" or t in plan.subsets:
+                    continue
+                fs = cm.fixture_slice(t, plan.touched)
+                if fs is None:
+                    continue
+                q, base_hit = fs
+                if not q and not base_hit:
+                    continue  # coverage not reproduced in isolation: leave as is
+                st = cm.subtests[t]
+                est = int(1000 * (0.2 + 1.3 * (st["base_cpu"] + sum(st["cpu"][i] for i in q))))
+                full = jcpu[t]
+                if t in H:
+                    if est > 0.8 * (ms[t] + 2000):
+                        continue
+                elif est >= 0.8 * full:
+                    continue
+                elif t in D and est > (1 - p[t]) * (ms[t] + 2000):
+                    continue
+                if jcpu is cpu:
+                    jcpu = dict(cpu)
+                jcpu[t] = est
+                plan.subsets[t] = (q, "__loader__")
+                H.discard(t)
+                D.discard(t)
+                if t not in R:
+                    R.append(t)
+            R.sort(key=lambda t: (-p[t] / max(jcpu[t], 1), jcpu[t]))
         results[plan.cid] = set(D)
         heavies[plan.cid] = (H, p, {t for t in D if p[t] >= 0.5})
         why[plan.cid] = plan.why
