@@ -438,8 +438,13 @@ def child_main(plan, run_ids, wfd, cm):
                         mn = f[:-3].replace("/", ".")
                         mn = mn[: -len(".__init__")] if mn.endswith(".__init__") else mn
                         try:
-                            importlib.import_module(mn)
+                            m_ = importlib.import_module(mn)
                         except BaseException:  # noqa
+                            broken = True
+                            continue
+                        # a module with lazy exports (module-level __getattr__) decides at import
+                        # time what `from module import X` in a test file resolves to
+                        if "__getattr__" in vars(m_):
                             broken = True
             if broken:
                 for tf in sorted(cm.by_file):
