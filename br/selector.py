@@ -707,7 +707,7 @@ def main():
                     pl.orig_fp = None
         gc.freeze()
         # practice: 3 min for the batch, final: 4.5 min for ~1.5x commits (~6 s per commit)
-        budget = float(os.environ.get("BR_BUDGET", min(230.0, max(100.0, 4.8 * len(cids)))))
+        budget = float(os.environ.get("BR_BUDGET", min(215.0, max(60.0, 3.6 * len(cids)))))
         run_jobs(jobs, cm, T0 + budget)
         for j in jobs:
             results[j.plan.cid] |= j.failed | j.out
