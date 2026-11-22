@@ -83,6 +83,16 @@ class CMap:
         self.preload_opens = set(d["preload_opens"])
         self._pou = {p: S(v) for p, v in d.get("preload_open_users", {}).items()}
         self.preload_keys = {tuple(d["keys"][i]) for i in d["preload_keys"]}
+        # class setups that the per-test tracers ran lazily (inside the first test) belong to
+        # preload: a change there reaches every test of the class (recorded before the retrace)
+        import os
+
+        extra = os.path.join(os.path.dirname(path), "preload_extra.json")
+        if os.path.exists(extra):
+            with open(extra) as f:
+                x = json.load(f)
+            self.preload_keys |= {tuple(k) for k in x["preload_keys"]}
+            self.preload_opens |= set(x["preload_opens"])
         self.types = _LazySets(ids, d["types"])
         self.mro = d["mro"]
         self.enums = set(d.get("enums", []))

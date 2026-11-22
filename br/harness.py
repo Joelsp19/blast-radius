@@ -202,6 +202,11 @@ LAZY_SETUP = {
 }
 
 
+# set for commits whose change can reach class setup code: a failing setUpClass must fail
+# every test of its class (as under pytest), not just those touching the lazy attributes
+EAGER = [False]
+
+
 class _LazyAttr:
     def __init__(self, name):
         self.name = name
@@ -219,7 +224,7 @@ def class_setup(cls):
     if cls in _class_state:
         return _class_state[cls]
     lazy = LAZY_SETUP.get((cls.__module__, cls.__name__))
-    if lazy and not getattr(cls, "__unittest_skip__", False):
+    if lazy and not EAGER[0] and not getattr(cls, "__unittest_skip__", False):
         for n in lazy:
             setattr(cls, n, _LazyAttr(n))
         _class_state[cls] = None
