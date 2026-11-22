@@ -263,6 +263,8 @@ def child_main(plan, run_ids, wfd, cm):
     import harness
     import overlay
 
+    # fewer cyclic-garbage collections while tests run (~5% less test cpu); still bounded
+    gc.set_threshold(int(os.environ.get("BR_GC0", "50000")), 50, 100)
     devnull = os.open(os.devnull, os.O_WRONLY)
     os.dup2(devnull, 1)
     if not DEBUG:
