@@ -3,3 +3,4 @@ __pycache__/
 br/*.pkl
 br/sub/*.pkl
 br/import_fp.pkl
+br/setup_fp.json

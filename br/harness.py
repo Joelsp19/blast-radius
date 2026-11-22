@@ -365,3 +365,67 @@ def restore_state(snap):
                     setattr(c, name, v)
                 except (AttributeError, TypeError):
                     pass
+
+
+def _deep_fp(obj, h, seen, depth=0):
+    """Feed a structural description of obj into hash h (types, values, object attributes)."""
+    if depth > 12:
+        h.update(b"<deep>")
+        return
+    if obj is None or isinstance(obj, (bool, int, float, str, bytes, range)):
+        h.update(repr((type(obj).__name__, obj)).encode())
+        return
+    if id(obj) in seen:
+        h.update(b"<seen>")
+        return
+    seen.add(id(obj))
+    if isinstance(obj, (tuple, list)):
+        h.update(f"{type(obj).__name__}[{len(obj)}".encode())
+        for x in obj:
+            _deep_fp(x, h, seen, depth + 1)
+        h.update(b"]")
+    elif isinstance(obj, dict):
+        h.update(f"dict[{len(obj)}".encode())
+        for k in sorted(obj, key=repr):
+            h.update(repr(k).encode())
+            _deep_fp(obj[k], h, seen, depth + 1)
+        h.update(b"]")
+    elif hasattr(obj, "__dict__") and type(obj).__module__.startswith("sqlglot"):
+        h.update(f"{type(obj).__module__}.{type(obj).__qualname__}".encode())
+        _deep_fp(dict(vars(obj)), h, seen, depth + 1)
+    else:
+        h.update(f"<{type(obj).__module__}.{type(obj).__qualname__}>".encode())
+
+
+# setup-built attributes whose contents can depend on sqlglot code (the duckdb connections
+# are built by duckdb from the csv files alone)
+SETUP_FP_ATTRS = {("tests.test_executor", "TestExecutor"): ("tpch_tables", "tpcds_tables")}
+
+
+def setup_fingerprints():
+    """{class key: digest of its setup-built attributes} after running the real setUpClass."""
+    import hashlib
+
+    out = {}
+    for (mod, cls), attrs in SETUP_FP_ATTRS.items():
+        m, err = import_test_module(mod)
+        if m is None:
+            out[f"{mod}:{cls}"] = None
+            continue
+        klass = getattr(m, cls)
+        for n in LAZY_SETUP.get((mod, cls), ()):
+            if isinstance(klass.__dict__.get(n), _LazyAttr):
+                delattr(klass, n)
+        _class_state.pop(klass, None)
+        try:
+            klass.setUpClass()
+        except BaseException:  # noqa
+            out[f"{mod}:{cls}"] = None
+            continue
+        _class_state[klass] = None
+        h = hashlib.blake2b(digest_size=16)
+        for a in attrs:
+            h.update(a.encode())
+            _deep_fp(getattr(klass, a), h, set())
+        out[f"{mod}:{cls}"] = h.hexdigest()
+    return out

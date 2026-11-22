@@ -235,7 +235,7 @@ def import_state_same(plan):
 
     try:
         with open(os.path.join(APP, "import_fp.pkl"), "rb") as f:
-            mods, fp, mfp, noisy = pickle.load(f)
+            mods, fp, mfp, noisy, csets = pickle.load(f)
         if noisy is None:
             return False
         for mn in mods:
@@ -247,6 +247,13 @@ def import_state_same(plan):
         return False
     names -= {oc.co_name for _, swaps in plan.swaps for oc, _, _, _ in swaps}
     names -= noisy  # differ between two identical fresh imports
+    # collections of classes built from sets: compare as sets (their order is per process)
+    import precompile
+
+    now = precompile.class_sets(mods)
+    names = {n for n in names if not (
+        any(k[1] == n for k in csets) and all(now.get(k) == v for k, v in csets.items() if k[1] == n)
+        and all(k in csets for k in now if k[1] == n))}
     # loggers live in the logging module (not purged) and the harness configures them; they
     # cannot change what a query computes
     import logging
@@ -257,6 +264,24 @@ def import_state_same(plan):
     if DEBUG:
         log(plan.cid, "import state changed:", sorted(names)[:20])
     return not names
+
+
+def setup_state_same(plan):
+    """Child: do the class setups build the same data with the patched code as with the
+    pinned code (fingerprinted at build time)?"""
+    import harness
+
+    try:
+        with open(os.path.join(APP, "setup_fp.json")) as f:
+            want = json.load(f)
+        got = harness.setup_fingerprints()
+    except BaseException as e:  # noqa
+        log(plan.cid, "setup check failed", repr(e))
+        return False
+    same = bool(want) and all(want.get(k) is not None and want.get(k) == v for k, v in got.items())
+    if DEBUG:
+        log(plan.cid, "setup state same:", same)
+    return same
 
 
 def child_main(plan, run_ids, wfd, cm):
@@ -281,6 +306,8 @@ def child_main(plan, run_ids, wfd, cm):
             sc = [h for h in getattr(plan, "state_check", ()) if h in run_ids]
             if sc:
                 same = import_state_same(plan)
+                if same and getattr(plan, "setup_check", False):
+                    same = setup_state_same(plan)
                 for h in sc:
                     run_ids.remove(h)
                     if not same:
@@ -691,8 +718,11 @@ def main():
             # the child reports them undecided and they are included.
             plan.state_check = []
             if (plan.mode == "fresh" and plan.preload_hit and not plan.other_no_slice
-                    and plan.touched_exact and plan.touched and not (set(plan.files) & cm.setup_paths)
+                    and plan.touched_exact and plan.touched
+                    and all(f.startswith("sqlglot/") for f in set(plan.files) & cm.setup_paths)
                     and not flags.NO_PRELOAD_SLICE):
+                # sqlglot code a class setup runs: its setup-built data is compared too
+                plan.setup_check = bool(set(plan.files) & cm.setup_paths)
                 for h in sorted(H):
                     q = cm.sub_queries(h, plan.touched)
                     if q is None:
