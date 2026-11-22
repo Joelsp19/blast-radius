@@ -156,12 +156,34 @@ def _doc_index(code):
     return 0
 
 
+_LC = {dis.opmap["LOAD_CONST"], dis.opmap.get("RETURN_CONST", -1)}
+_EXT = dis.opmap["EXTENDED_ARG"]
+
+
+def _doc_index_fast(code):
+    """_doc_index for function bodies without disassembling: constant 0 is the docstring
+    unless some LOAD_CONST / RETURN_CONST (not extended) reads it."""
+    consts = code.co_consts
+    if not consts or not isinstance(consts[0], str):
+        return None
+    if code.co_name == "<module>" or not (code.co_flags & 0x2):
+        return _doc_index(code)
+    b = code.co_code
+    ext = False
+    for i in range(0, len(b), 2):
+        op = b[i]
+        if not ext and b[i + 1] == 0 and op in _LC:
+            return None
+        ext = op == _EXT
+    return 0
+
+
 def shallow_sig(code):
     consts = code.co_consts
     if code.co_name != "<module>" and not (code.co_flags & 0x2):
         # class body: 3.13 stores __firstlineno__ as a constant
         consts = tuple("<fl>" if (type(c) is int and c == code.co_firstlineno) else c for c in consts)
-    di = _doc_index(code)
+    di = _doc_index_fast(code)
     if di is not None:
         # pytest never runs sqlglot's doctests, so docstrings cannot fail a test
         consts = consts[:di] + ("<doc>",) + consts[di + 1:]

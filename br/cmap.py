@@ -48,8 +48,15 @@ class _LazySubtests:
             import gzip
             import os
 
-            with gzip.open(os.path.join(self.dir, fn), "rb") as f:
-                r = self.done[tid] = json.loads(f.read())
+            pk = os.path.join(self.dir, fn[: -len(".json.gz")] + ".pkl")
+            if os.path.exists(pk):
+                import pickle
+
+                with open(pk, "rb") as f:
+                    r = self.done[tid] = pickle.load(f)
+            else:
+                with gzip.open(os.path.join(self.dir, fn), "rb") as f:
+                    r = self.done[tid] = json.loads(f.read())
         return r
 
     def __getitem__(self, tid):
@@ -64,7 +71,15 @@ class _LazySubtests:
 
 class CMap:
     def __init__(self, path):
-        if path.endswith(".gz"):
+        import os
+
+        pk = path[: -len(".json.gz")] + ".pkl" if path.endswith(".json.gz") else None
+        if pk and os.path.exists(pk):
+            import pickle
+
+            with open(pk, "rb") as f:
+                d = pickle.load(f)
+        elif path.endswith(".gz"):
             import gzip
 
             with gzip.open(path, "rb") as f:

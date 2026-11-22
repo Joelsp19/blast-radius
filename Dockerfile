@@ -14,7 +14,7 @@ os.rename('/opt/sqlglot-${SQLGLOT_SHA}', '/opt/sqlglot')" \
  && chmod -R a+rX /opt/sqlglot
 
 COPY br /app/br
-RUN python -m compileall -q /app/br && chmod -R a+rX /app
+RUN python /app/br/precompile.py && python -m compileall -q /app/br && chmod -R a+rX /app
 
 ENV PYTHONPATH=/opt/sqlglot SKIP_INTEGRATION=0 PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 CMD ["python", "/app/br/selector.py"]
