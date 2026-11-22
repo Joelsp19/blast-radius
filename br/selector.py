@@ -110,6 +110,38 @@ def _mro(c):
         return None
 
 
+_SPANS = {}
+
+
+def _cold_branch(cm, rel, ln):
+    """Is line `ln` of `rel` never executed by a test although its function is called by
+    tests? Then it is a branch the trace skipped only because of warm state (a dialect
+    already loaded, a cache already built...), and in a real run it may run inside a test."""
+    import ast
+
+    if cm.line_tests(rel, ln):
+        return False
+    spans = _SPANS.get(rel)
+    if spans is None:
+        covered_starts = set()
+        for k in cm.keys_by_file.get(rel, ()):
+            if cm.cover.get(k):
+                covered_starts.add(k[2])
+        spans = []
+        try:
+            with open(os.path.join(SG, rel), encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+            for n in ast.walk(tree):
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    start = min([n.lineno] + [d.lineno for d in n.decorator_list])
+                    if start in covered_starts or n.lineno in covered_starts:
+                        spans.append((n.body[0].lineno, n.end_lineno))
+        except (OSError, SyntaxError):
+            spans = [(0, 10**9)]
+        _SPANS[rel] = spans
+    return any(a <= ln <= b for a, b in spans)
+
+
 def slice_by_state(plan, cm, run_ids, out):
     """Keep only tests that can observe a changed class/module attribute (see statediff)."""
     import importlib
@@ -211,6 +243,31 @@ def slice_by_state(plan, cm, run_ids, out):
             for n in names:
                 if re.search(BOUND + re.escape(n) + BOUND, txt):
                     found.append((n, rel, cm.line_tests(rel, ln)))
+
+    # changed *code* (a method replaced in a class body: decorator, ...) called on a line the
+    # trace never saw a test run, inside a function tests do call: that branch was skipped only
+    # because of warm state (a dialect already loaded, ...) and may run in any test in a real
+    # run, with outcomes that depend on test order. Include every test without running.
+    code_names = {n for n in names if any(
+        isinstance(vars(c).get(n), (types.FunctionType, classmethod, staticmethod, property))
+        for c in newc.values())}
+    if code_names:
+        for rel, lns in hits.items():
+            try:
+                with open(os.path.join(SG, rel), encoding="utf-8") as f:
+                    src_lines = f.read().split(NL)
+            except OSError:
+                continue
+            for ln in lns:
+                txt = src_lines[ln - 1] if ln - 1 < len(src_lines) else ""
+                if any(re.search(BOUND + re.escape(n) + BOUND, txt) for n in code_names) and _cold_branch(cm, rel, ln):
+                    if DEBUG:
+                        log(plan.cid, "changed code on a cold branch:", rel, ln)
+                    # results in our process depend on which dialects/caches earlier tests
+                    # warmed (order differs from pytest): include everything, run nothing
+                    for t in cm.ids:
+                        out.write("U " + t + NL)
+                    return []
 
     def allowed_for(scoped, keytests):
         """Tests that can observe the change (None: cannot tell, keep everything)."""
