@@ -24,7 +24,7 @@ class _Loader(importlib.abc.Loader):
     def exec_module(self, module):
         if self.source is None:
             raise ModuleNotFoundError(f"No module named {self.fullname!r}", name=self.fullname)
-        code = compile(self.source, self.path, "exec", dont_inherit=True)
+        code = compile(self.source.encode("utf-8", "surrogateescape"), self.path, "exec", dont_inherit=True)
         exec(code, module.__dict__)
 
     def get_source(self, fullname):

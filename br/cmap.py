@@ -258,8 +258,11 @@ class CMap:
         if path.startswith("tests/"):
             r |= self.tests_in_file(path)
         if include_importers:
-            for tf in self.importers.get(path, ()):
-                r |= self.tests_in_file(tf)
+            # a module that fails to import breaks every test file importing it, also through
+            # other modules (statically known part; the child checks the rest by importing)
+            for mp in {path} | set(self.rclosure.get(path, ())):
+                for tf in self.importers.get(mp, ()):
+                    r |= self.tests_in_file(tf)
             for mp in self.mod_importers.get(path, ()):
                 r |= self.file_cover(mp)
                 r |= self.module_types_users(mp)

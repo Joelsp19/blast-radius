@@ -285,7 +285,7 @@ class Analyzer:
     def py_change(self, plan, path, a, b):
         m = self.m
         try:
-            old = compile(a, self.root + path, "exec", dont_inherit=True)
+            old = compile(_src_bytes(a), self.root + path, "exec", dont_inherit=True)
         except SyntaxError:
             plan.notes.append(f"{path}: original does not compile?")
             plan.no_slice = plan.other_no_slice = True
@@ -293,7 +293,7 @@ class Analyzer:
             plan.add("file", m.file_dependents(path, include_importers=True))
             return
         try:
-            new = compile(b, self.root + path, "exec", dont_inherit=True)
+            new = compile(_src_bytes(b), self.root + path, "exec", dont_inherit=True)
         except (SyntaxError, ValueError) as e:
             plan.notes.append(f"{path}: COMPILE ERROR {e.__class__.__name__}")
             plan.no_slice = plan.other_no_slice = True
@@ -459,6 +459,12 @@ class Analyzer:
         plan.add("type", m.qual_prefix_cover(path, q))
         if m.is_enum(tk) or not users:
             plan.add("file", m.file_dependents(path, include_importers=True))
+
+
+def _src_bytes(text):
+    """Source as bytes, so that a coding declaration is honoured exactly as on import (compiling
+    an already decoded str ignores it: an `# -*- coding: ascii -*-` comment can break a module)."""
+    return text.encode("utf-8", "surrogateescape")
 
 
 def changed_toplevel_names(a, b):

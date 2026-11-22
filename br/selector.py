@@ -129,7 +129,7 @@ def slice_by_state(plan, cm, run_ids, out):
     # key-level: a changed dict / set attribute is only observed by tests that read it as a
     # whole or looked up one of the changed keys
     keytests = {}
-    if os.environ.get("BR_NOKEYS", "1") == "1" or flags.NO_NEWSLICE:
+    if os.environ.get("BR_NOKEYS", "0") == "1" or flags.NO_NEWSLICE:
         # off by default: a container can be copied at import time into another class, whose
         # readers the per-key map does not attribute to the changed container
         plan.orig_kfp = None
@@ -173,12 +173,17 @@ def slice_by_state(plan, cm, run_ids, out):
             continue  # also a class attribute: visible anywhere
         names.add(n)
     scoped = {n: sc for n, sc in mod_scope.items() if sc is not None and n not in cnames}
-    if flags.NO_NEWSLICE or os.environ.get("BR_NOSCOPE", "1") == "1":
+    if flags.NO_NEWSLICE or os.environ.get("BR_NOSCOPE", "0") == "1":
         # off by default: a module global can be copied at import time into objects of other
         # modules (e.g. a dialect class), so its readers are not limited to its importers
         scoped = {}
     if DEBUG:
         log(plan.cid, "child fingerprinted", round(time.process_time(), 2))
+    if (scoped or keytests) and propagated(plan, cm):
+        # the change was copied into other modules' objects at import: their readers are not
+        # limited to the changed module's importers / the changed keys' readers
+        scoped = {}
+        keytests = {}
     keep_kinds = {"line", "fixture"}
     allowed = {t for t in run_ids if plan.why.get(t) in keep_kinds}
     hits = statediff.lines_mentioning(SG, names, cm.line_files())
@@ -207,6 +212,8 @@ def slice_by_state(plan, cm, run_ids, out):
                             break
                 except OSError:
                     pass
+    if any(n.startswith("__") and n.endswith("__") for n in names):
+        return run_ids  # dunder methods are invoked implicitly (calls, operators): no textual trace
     if names - mentioned:
         # some changed attribute is only reached dynamically: keep all class users
         return run_ids
@@ -227,40 +234,78 @@ def slice_by_state(plan, cm, run_ids, out):
     return keep
 
 
-def import_state_same(plan):
-    """Child, fresh mode, right after the purge: does a fresh import of the patched sqlglot
-    leave the same import-time state (class and module attributes) as a fresh import of the
-    pinned one (fingerprinted at build time)? The changed functions themselves are expected
-    to differ: their effect is what per-query coverage accounts for."""
+def import_changed(plan, subset=None):
+    """Child, after a fresh import of the patched tree: names of class / module attributes of
+    sqlglot (or of the `subset` modules) that differ from a fresh import of the pinned tree
+    (fingerprinted at build time), apart from the changed functions themselves and values
+    known to vary between identical imports. None if it cannot be decided."""
     import importlib
+    import logging
     import pickle
 
+    import precompile
     import statediff
 
     try:
         with open(os.path.join(APP, "import_fp.pkl"), "rb") as f:
-            mods, fp, mfp, noisy = pickle.load(f)
+            data = pickle.load(f)
+        mods, fp, mfp, noisy = data[:4]
+        csets = data[4] if len(data) > 4 else {}
         if noisy is None:
-            return False
-        for mn in mods:
+            return None
+        use = [m for m in mods if subset is None or m in subset]
+        for mn in use:
             importlib.import_module(mn)
-        names = statediff.changed_names(fp, statediff.fingerprint(statediff.class_keys(mods)))
-        names |= statediff.changed_names(mfp, statediff.module_fingerprint(mods))
+        inuse = set(use)
+        newc = {k: v for k, v in statediff.fingerprint(statediff.class_keys(use)).items() if k.split(":")[0] in inuse}
+        oldc = {k: v for k, v in fp.items() if k.split(":")[0] in inuse}
+        oldm = {k: v for k, v in mfp.items() if k in inuse}
+        names = statediff.changed_names(oldc, newc) | statediff.changed_names(oldm, statediff.module_fingerprint(use))
+        now = precompile.class_sets(use)
     except BaseException as e:  # noqa
         log(plan.cid, "state check failed", repr(e))
-        return False
+        return None
     names -= {oc.co_name for _, swaps in plan.swaps for oc, _, _, _ in swaps}
-    names -= noisy  # differ between two identical fresh imports
-    # loggers live in the logging module (not purged) and the harness configures them; they
-    # cannot change what a query computes
-    import logging
-
+    names -= noisy
+    # class collections built from sets: compare as sets (their order is per process)
+    names = {n for n in names if not (
+        any(k[1] == n for k in csets if k[0] in inuse)
+        and all(now.get(k) == v for k, v in csets.items() if k[1] == n and k[0] in inuse)
+        and all(k in csets for k in now if k[1] == n))}
+    # loggers live in the logging module (not purged) and the harness configures them
     names = {n for n in names if not all(
         isinstance(getattr(sys.modules[m], n), logging.Logger)
-        for m in mods if m in sys.modules and hasattr(sys.modules[m], n))}
+        for m in use if m in sys.modules and hasattr(sys.modules[m], n))}
+    return names
+
+
+def import_state_same(plan):
+    names = import_changed(plan)
     if DEBUG:
-        log(plan.cid, "import state changed:", sorted(names)[:20])
-    return not names
+        log(plan.cid, "import state changed:", None if names is None else sorted(names)[:20])
+    return names is not None and not names
+
+
+def propagated(plan, cm):
+    """Did the change reach, at import time, objects of other modules than the changed ones
+    (copies into a dialect class, ...)? Scoped / per-key state slicing assume it did not."""
+    paths = set()
+    for mn in plan.slice_mods:
+        for cand in (mn.replace(".", "/") + ".py", mn.replace(".", "/") + "/__init__.py"):
+            if os.path.exists(os.path.join(SG, cand)):
+                paths.add(cand)
+    others = set()
+    for pth in paths:
+        for q in cm.rclosure.get(pth, ()):
+            m = q[:-3].replace("/", ".")
+            others.add(m[: -len(".__init__")] if m.endswith(".__init__") else m)
+    others -= set(plan.slice_mods)
+    if not others:
+        return False
+    names = import_changed(plan, others)
+    if DEBUG:
+        log(plan.cid, "propagation:", None if names is None else sorted(names)[:20])
+    return names is None or bool(names)
 
 
 def child_main(plan, run_ids, wfd, cm):
@@ -293,6 +338,39 @@ def child_main(plan, run_ids, wfd, cm):
                         out.write(f"R 0 {h}\n")  # no query executes a changed line
                     else:
                         run_ids.insert(0, h)
+            # a change that can break imports: every test whose file does not import with the
+            # change fails ("the test's file cannot be imported"); find them by importing
+            broken = bool(plan.other_no_slice)
+            if not broken:
+                import importlib
+
+                for f in plan.files:
+                    if f.startswith("sqlglot/") and f.endswith(".py"):
+                        mn = f[:-3].replace("/", ".")
+                        mn = mn[: -len(".__init__")] if mn.endswith(".__init__") else mn
+                        try:
+                            importlib.import_module(mn)
+                        except BaseException:  # noqa
+                            broken = True
+            if broken:
+                for tf in sorted(cm.by_file):
+                    try:
+                        mod, err = harness.import_test_module(tf[:-3].replace("/", "."))
+                    except BaseException as e:  # noqa
+                        mod, err = None, e
+                    if mod is None:
+                        for t in sorted(cm.by_file[tf]):
+                            out.write(f"F {t}" + NL)
+                            if t in run_ids:
+                                run_ids.remove(t)
+            # a heavy test whose module cannot be imported with the change fails for certain
+            for h in getattr(plan, "heavy_ids", ()):
+                try:
+                    mod, err = harness.import_test_module(h.split("::")[0][:-3].replace("/", "."))
+                except BaseException as e:  # noqa
+                    mod, err = None, e
+                if mod is None:
+                    out.write(f"F {h}" + NL)
         else:
             do_swaps(plan)
     except BaseException as e:  # noqa
@@ -410,6 +488,11 @@ def handle_line(job, line):
         job.est_done += job.cpu.get(tid, 0) if job.cpu else 0
         job.cur = None
         job.cur_t = time.time()
+    elif line.startswith("F "):
+        tid = line[2:]
+        job.failed.add(tid)  # known to fail (e.g. its module does not import)
+        if tid in job.todo:
+            job.todo.remove(tid)
     elif line.startswith("U "):
         tid = line[2:]
         job.out.add(tid)
