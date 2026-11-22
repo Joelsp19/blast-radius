@@ -284,6 +284,39 @@ def setup_state_same(plan):
     return same
 
 
+def heavy_methods_unchanged(plan, H):
+    """Heavy tests proven unaffected by a test-method-only commit (see replay)."""
+    import importlib
+
+    import harness
+    import replay
+
+    quals = {}
+    for path, swaps in plan.swaps:
+        for oc, nc, own, parent in swaps:
+            parts = oc.co_qualname.split(".")
+            if len(parts) != 2 or not parts[1].startswith("test"):
+                return set()  # some non-test code changed
+            quals[f"{path}::{parts[0]}::{parts[1]}"] = (path, parts[0], oc, nc)
+    out = set()
+    for h in H:
+        if h not in quals:
+            continue
+        path, cname, oc, nc = quals[h]
+        try:
+            mod, err = harness.import_test_module(path[:-3].replace("/", "."))
+            if mod is None:
+                continue
+            klass = getattr(mod, cname)
+            if replay.test_method_unchanged(mod, klass, oc, nc):
+                out.add(h)
+        except BaseException as e:  # noqa
+            log(plan.cid, "method replay failed", repr(e))
+    if out:
+        log(plan.cid, "heavy test methods proven unchanged:", sorted(out))
+    return out
+
+
 def child_main(plan, run_ids, wfd, cm):
     import harness
     import overlay
@@ -649,6 +682,10 @@ def main():
         jcpu = cpu
         D0, H0, R0 = set(D), set(H), list(R)
         try:
+            # a commit that only edits test methods: a heavy test whose own (edited) method is
+            # shown to make exactly the same calls as before cannot fail (it passes at the pin)
+            if H and plan.mode == "swap" and plan.swaps and all(p_.startswith("tests/") for p_ in plan.files):
+                H -= heavy_methods_unchanged(plan, H)
             for h in sorted(H):
                 if plan.why.get(h) != "line" or not plan.touched_exact or plan.mode == "fresh":
                     continue

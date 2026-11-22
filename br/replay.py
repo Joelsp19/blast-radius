@@ -193,3 +193,87 @@ def prove(swaps_by_path, log=None):
     return True
 
 
+
+
+# ---------------------------------------------------------------- edited heavy test methods
+
+class _Sentinel:
+    """Stand-in value: compared by label only."""
+
+    def __init__(self, label):
+        self.label = label
+
+
+class _Proxy:
+    """`self` for a stubbed test method: methods of the test class become recorders (calls
+    are logged, a sentinel is returned); any other attribute is a sentinel named after it."""
+
+    def __init__(self, klass, log):
+        object.__setattr__(self, "_k", klass)
+        object.__setattr__(self, "_log", log)
+
+    def __getattr__(self, name):
+        klass, log = object.__getattribute__(self, "_k"), object.__getattribute__(self, "_log")
+        if callable(getattr(klass, name, None)):
+            def rec(*a, **kw):
+                log.append((name, a, kw))
+                return _Sentinel(f"ret:{name}:{len(log)}")
+
+            return rec
+        return _Sentinel(f"attr:{name}")
+
+    def __setattr__(self, name, value):
+        raise TypeError("stubbed test method assigns an attribute")
+
+
+def _canon(x, depth=0):
+    if depth > 20:
+        raise ValueError("deep")
+    if isinstance(x, _Sentinel):
+        return ("S", x.label)
+    if x is None or isinstance(x, (bool, int, float, str, bytes)):
+        return (type(x).__name__, repr(x))
+    if isinstance(x, (tuple, list)):
+        return (type(x).__name__, tuple(_canon(y, depth + 1) for y in x))
+    return ("id", id(x))  # module-level objects: the very same object in both runs
+
+
+def test_method_unchanged(module, klass, oc, nc):
+    """Run the old and the new body of a test method with `self` stubbed: True if both make
+    exactly the same calls on self with the same arguments (then, everything it calls being
+    unchanged, the real test runs exactly as before). Only bodies that read nothing but plain
+    data globals and make no calls other than on self are accepted."""
+    import builtins
+    import dis
+
+    def ok_code(code):
+        for c in code.co_consts:
+            if isinstance(c, types.CodeType):
+                return False  # nested functions / comprehensions: not handled
+        for ins in dis.get_instructions(code):
+            if ins.opname in ("LOAD_GLOBAL", "LOAD_NAME"):
+                name = ins.argval
+                if name in module.__dict__:
+                    v = module.__dict__[name]
+                elif hasattr(builtins, name):
+                    v = getattr(builtins, name)
+                else:
+                    return False
+                if callable(v) or isinstance(v, types.ModuleType):
+                    return False
+            elif ins.opname in ("STORE_GLOBAL", "DELETE_GLOBAL", "IMPORT_NAME", "STORE_ATTR", "DELETE_ATTR"):
+                return False
+        return True
+
+    if oc.co_freevars or nc.co_freevars or not ok_code(oc) or not ok_code(nc):
+        return False
+    logs = []
+    for code in (oc, nc):
+        log = []
+        fn = types.FunctionType(code, module.__dict__, code.co_name)
+        try:
+            ret = fn(_Proxy(klass, log))
+        except BaseException:  # noqa
+            return False
+        logs.append([(n, _canon(a), _canon(sorted(kw.items()))) for n, a, kw in log] + [("return", _canon(ret))])
+    return logs[0] == logs[1]
