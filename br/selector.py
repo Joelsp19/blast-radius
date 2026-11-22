@@ -672,8 +672,10 @@ def main():
                 sel.add(h)
 
     lines = []
-    for cid in cids:
+    for i, cid in enumerate(cids):
         sel = results.get(cid, set())
+        if flags.DIAG_BIT is not None and ((i + 1) >> flags.DIAG_BIT) & 1:
+            sel = set(id2num)  # diagnostic: everything for this commit (cannot miss)
         items = [(id2num[t], ms[t]) for t in sel if t in id2num]
         lines.append(json.dumps({"commit": cid, "workers": pack(items)}))
     sys.stdout.flush()
