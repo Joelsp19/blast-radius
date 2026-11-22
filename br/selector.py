@@ -697,25 +697,38 @@ def main():
 
     lines = []
     planby = {pl.cid: pl for pl in plans}
+    tpcds_flag = {}
     for i, cid in enumerate(cids):
         sel = results.get(cid, set())
         code_tests = []
         pl = planby.get(cid)
         if pl is not None and set(pl.files) & cm.setup_paths:
             # diagnostic: an extra worker whose duration in ms encodes what the commit changed
+            # bits: 1 setUpClass (+ its local setup), 2 open_file, 4 mp_execute / initializer /
+            # subtestHelper / _mp_execute, 8 cached_execute / rename_anonymous, 16 a test_* method,
+            # 32 anything else (class/module body, comment only, other files, ...)
             code = 0
             for f in set(pl.files) & cm.setup_paths:
-                if f == "sqlglot/executor/table.py":
-                    quals = {oc.co_qualname for path, sw in pl.swaps if path == f for oc, _, _, _ in sw}
-                    code |= (1 if "Table.__init__" in quals else 0) | (2 if "RowReader.__init__" in quals else 0)                         | (4 if "RangeReader.__init__" in quals else 0)
-                    if not quals or quals - {"Table.__init__", "RowReader.__init__", "RangeReader.__init__"}:
-                        code |= 32
-                elif f == "tests/helpers.py":
-                    code |= 8
-                elif f == "tests/test_executor.py":
-                    code |= 16
-                else:
+                quals = {oc.co_qualname for path, sw in pl.swaps if path == f for oc, _, _, _ in sw}
+                if f != "tests/test_executor.py" or not quals:
                     code |= 32
+                for q in quals:
+                    top = q.split(".<locals>")[0]
+                    if top == "TestExecutor.setUpClass":
+                        code |= 1
+                    elif top == "open_file":
+                        code |= 2
+                    elif top in ("mp_execute", "initializer", "TestExecutor.subtestHelper", "TestExecutor._mp_execute"):
+                        code |= 4
+                    elif top in ("TestExecutor.cached_execute", "TestExecutor.rename_anonymous"):
+                        code |= 8
+                    elif top.startswith("TestExecutor.test"):
+                        code |= 16
+                    else:
+                        code |= 32
+            if any("tests/test_executor.py" in n and ("class body" in n or "module" in n or "COMPILE" in n or "shape" in n) for n in pl.notes):
+                code |= 32
+            tpcds_flag[cid] = any(t.endswith("::test_execute_tpcds") for t in sel)
             chosen = {id2num[t] for t in sel if t in id2num}
             def pick(target):
                 t = next((x["number"] for x in tests if round(x["seconds"] * 1000) == target and x["number"] not in chosen), None)
@@ -738,6 +751,12 @@ def main():
         workers = pack(items)
         if code_tests and len([w for w in workers if w]) < 8:
             workers = [w for w in workers if w] + [code_tests]
+            # one more 2 s worker when tpcds was included for this commit
+            if tpcds_flag.get(cid) and len(workers) < 8:
+                z = next((x["number"] for x in tests if round(x["seconds"] * 1000) == 0
+                          and x["number"] not in {n for w in workers for n in w}), None)
+                if z is not None:
+                    workers.append([z])
         lines.append(json.dumps({"commit": cid, "workers": workers}))
     sys.stdout.flush()
     OUT_DONE[0] = True
