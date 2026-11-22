@@ -704,9 +704,8 @@ def main():
         pl = planby.get(cid)
         if pl is not None and set(pl.files) & cm.setup_paths:
             # diagnostic: an extra worker whose duration in ms encodes what the commit changed
-            # bits: 1 setUpClass (+ its local setup), 2 open_file, 4 mp_execute / initializer /
-            # subtestHelper / _mp_execute, 8 cached_execute / rename_anonymous, 16 a test_* method,
-            # 32 anything else (class/module body, comment only, other files, ...)
+            # bits: 1 test_execute_tpcds, 2 test_execute_tpch, 4 test_optimized_tpch,
+            # 8 another test_* method, 16 another function, 32 anything else
             code = 0
             for f in set(pl.files) & cm.setup_paths:
                 quals = {oc.co_qualname for path, sw in pl.swaps if path == f for oc, _, _, _ in sw}
@@ -714,18 +713,16 @@ def main():
                     code |= 32
                 for q in quals:
                     top = q.split(".<locals>")[0]
-                    if top == "TestExecutor.setUpClass":
+                    if top == "TestExecutor.test_execute_tpcds":
                         code |= 1
-                    elif top == "open_file":
+                    elif top == "TestExecutor.test_execute_tpch":
                         code |= 2
-                    elif top in ("mp_execute", "initializer", "TestExecutor.subtestHelper", "TestExecutor._mp_execute"):
+                    elif top == "TestExecutor.test_optimized_tpch":
                         code |= 4
-                    elif top in ("TestExecutor.cached_execute", "TestExecutor.rename_anonymous"):
-                        code |= 8
                     elif top.startswith("TestExecutor.test"):
-                        code |= 16
+                        code |= 8
                     else:
-                        code |= 32
+                        code |= 16
             if any("tests/test_executor.py" in n and ("class body" in n or "module" in n or "COMPILE" in n or "shape" in n) for n in pl.notes):
                 code |= 32
             tpcds_flag[cid] = any(t.endswith("::test_execute_tpcds") for t in sel)
