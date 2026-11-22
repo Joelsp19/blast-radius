@@ -103,6 +103,13 @@ NL = chr(10)
 BOUND = chr(92) + "b"
 
 
+def _mro(c):
+    try:
+        return tuple(f"{b.__module__}.{b.__qualname__}" for b in c.__mro__)
+    except Exception:  # noqa
+        return None
+
+
 def slice_by_state(plan, cm, run_ids, out):
     """Keep only tests that can observe a changed class/module attribute (see statediff)."""
     import importlib
@@ -127,6 +134,11 @@ def slice_by_state(plan, cm, run_ids, out):
             if isinstance(obj, type):
                 newc[k] = obj
     newfp = statediff.fingerprint(newc)
+    # a changed base class changes every inherited attribute, which own-attribute fingerprints
+    # do not show: too broad to slice
+    om = getattr(plan, "orig_mro", None)
+    if om is None or any(k in om and om[k] != _mro(c) for k, c in newc.items()):
+        return run_ids
     cnames = statediff.changed_names(plan.orig_fp, newfp)
     names = set(cnames)
     # key-level: a changed dict / set attribute is only observed by tests that read it as a
@@ -380,14 +392,6 @@ def child_main(plan, run_ids, wfd, cm):
                             out.write(f"F {t}" + NL)
                             if t in run_ids:
                                 run_ids.remove(t)
-            # a heavy test whose module cannot be imported with the change fails for certain
-            for h in getattr(plan, "heavy_ids", ()):
-                try:
-                    mod, err = harness.import_test_module(h.split("::")[0][:-3].replace("/", "."))
-                except BaseException as e:  # noqa
-                    mod, err = None, e
-                if mod is None:
-                    out.write(f"F {h}" + NL)
         else:
             do_swaps(plan)
     except BaseException as e:  # noqa
@@ -915,6 +919,7 @@ def main():
                         __import__(mn)
                     ck = statediff.class_keys(pl.slice_mods)
                     pl.orig_fp = statediff.fingerprint(ck)
+                    pl.orig_mro = {k: _mro(c) for k, c in ck.items()}
                     pl.orig_kfp = statediff.container_fingerprint(ck) if cm.key_labels else None
                     pl.orig_mfp = statediff.module_fingerprint(pl.slice_mods)
                 except BaseException as e:  # noqa
