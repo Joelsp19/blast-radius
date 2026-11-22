@@ -83,7 +83,6 @@ class CMap:
         self.preload_opens = set(d["preload_opens"])
         self._pou = {p: S(v) for p, v in d.get("preload_open_users", {}).items()}
         self.preload_keys = {tuple(d["keys"][i]) for i in d["preload_keys"]}
-        self.setup_keys = set()
         # class setups that the per-test tracers ran lazily (inside the first test) belong to
         # preload: a change there reaches every test of the class (recorded before the retrace)
         import os
@@ -92,9 +91,6 @@ class CMap:
         if os.path.exists(extra):
             with open(extra) as f:
                 x = json.load(f)
-            # keys that ran only inside a lazily built class setup: a change there reaches
-            # the tests that execute it plus the tests of that class (through its setup)
-            self.setup_keys = {tuple(k) for k in x["preload_keys"]} - self.preload_keys
             self.preload_keys |= {tuple(k) for k in x["preload_keys"]}
             self.preload_opens |= set(x["preload_opens"])
         # files that lazily run class setups read or execute: a change there decides whether
@@ -207,13 +203,6 @@ class CMap:
                 r |= self.cover[k]
             self._fc[path] = r
         return r
-
-    def lazy_class_tests(self):
-        """Tests of the classes whose setUpClass the harness builds lazily."""
-        from harness import LAZY_SETUP
-
-        pre = {mod.replace(".", "/") + ".py::" + cls + "::" for mod, cls in LAZY_SETUP}
-        return {t for t in self.ids if t.startswith(tuple(pre))}
 
     def class_users(self, tk):
         r = set()

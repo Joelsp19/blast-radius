@@ -319,12 +319,7 @@ class Analyzer:
             swaps.append((oc, nc, own, parent))
             if own:
                 plan.add("line", self.line_cands(path, a, oc, m.cover.get(key, set())))
-            if own and key in m.setup_keys:
-                # runs at "preload" only through a lazy class setup: the child runs that setup
-                # eagerly with the swapped code, so its class's tests see the change
-                plan.add("file", m.lazy_class_tests())
-                plan.notes.append(f"{path}:{oc.co_qualname} runs in a lazy class setup")
-            elif own and key in m.preload_keys:
+            if own and key in m.preload_keys:
                 plan.escalate("fresh")
                 plan.notes.append(f"{path}:{oc.co_qualname} runs at preload -> fresh")
                 plan.no_slice = True

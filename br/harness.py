@@ -219,16 +219,6 @@ class _LazyAttr:
         return getattr(owner, self.name)
 
 
-def reset_lazy():
-    """Forget lazily deferred class setups (made in the zygote) so they run eagerly."""
-    for cls in list(_class_state):
-        if (cls.__module__, cls.__name__) in LAZY_SETUP:
-            for n in LAZY_SETUP[(cls.__module__, cls.__name__)]:
-                if isinstance(cls.__dict__.get(n), _LazyAttr):
-                    delattr(cls, n)
-            del _class_state[cls]
-
-
 def class_setup(cls):
     """Run setUpClass once (lazily). Returns None or the exception."""
     if cls in _class_state:
