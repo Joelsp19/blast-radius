@@ -17,6 +17,59 @@ import patchlib
 PY_ROOTS = ("sqlglot/", "tests/")
 
 
+def _pairs(text):
+    """The (sql, expected) statement pairs tests/helpers.load_sql_fixture_pairs yields."""
+    lines = [ln for ln in text.splitlines() if ln and not ln.startswith("--")]
+    st = chr(10).join(lines).split(";")
+    return [(st[i], st[i + 1]) for i in range(0, len(st), 2) if i + 1 < len(st)]
+
+
+def changed_pairs(old, new):
+    """Indices of the changed statement pairs, or None if pairs were added or removed."""
+    a, b = _pairs(old), _pairs(new)
+    if len(a) != len(b):
+        return None
+    return [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+
+
+def class_fixture_attrs(root):
+    """Fixture map read from the pinned test sources: query-pair fixture files loaded into a
+    class attribute by setUpClass -> (attr, [test ids reading self.<attr>])."""
+    out = {}
+    for rel in ("tests/test_executor.py",):
+        try:
+            with open(os.path.join(root, rel), encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+        except (OSError, SyntaxError):
+            continue
+        for cls in tree.body:
+            if not isinstance(cls, ast.ClassDef):
+                continue
+            meths = {f.name: f for f in cls.body if isinstance(f, ast.FunctionDef)}
+            setup = meths.get("setUpClass")
+            if setup is None:
+                continue
+            for n in ast.walk(setup):
+                if not (isinstance(n, ast.Assign) and len(n.targets) == 1
+                        and isinstance(n.targets[0], ast.Attribute)):
+                    continue
+                call = n.value
+                if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "list" and call.args:
+                    call = call.args[0]
+                if not (isinstance(call, ast.Call) and getattr(call.func, "id", None) == "load_sql_fixture_pairs"
+                        and call.args and isinstance(call.args[0], ast.Constant)):
+                    continue
+                attr = n.targets[0].attr
+                users = []
+                for name, f in meths.items():
+                    if not name.startswith("test"):
+                        continue
+                    if any(isinstance(x, ast.Attribute) and x.attr == attr for x in ast.walk(f)):
+                        users.append(f"{rel}::{cls.name}::{name}")
+                out["tests/fixtures/" + call.args[0].value] = (attr, users)
+    return out
+
+
 class Plan:
     def __init__(self, cid):
         self.cid = cid
@@ -172,6 +225,8 @@ class Analyzer:
             # data / fixture file (anywhere in the repo, as long as some test reads it)
             if txt_old is not None and txt_new is not None and txt_old == txt_new:
                 return
+            if self.class_fixture_change(plan, path, txt_old, txt_new):
+                return
             users = m.opens.get(path, set())
             plan.add("fixture", users)
             if path in m.preload_opens:
@@ -195,6 +250,35 @@ class Analyzer:
             return
         # files outside sqlglot/ and tests/ (docs, CI, benchmarks, ...) cannot affect tests
         plan.notes.append(f"{path}: outside")
+
+    def class_fixture_change(self, plan, path, a, b):
+        """A query-pair fixture that a class setup loads into an attribute: only the tests
+        reading that attribute see it, and only through the changed pairs (run just those)."""
+        if a is None or b is None:
+            return False
+        if not hasattr(self, "_cfa"):
+            self._cfa = class_fixture_attrs(self.root)
+        info = self._cfa.get(path)
+        if info is None:
+            return False
+        idx = changed_pairs(a, b)
+        if idx is None:
+            return False
+        attr, readers = info
+        m = self.m
+        # tests that open the file themselves (outside the class whose setup loads it)
+        own = {c.split("::")[1] for c in readers}
+        direct = {t for t in m.opens.get(path, set()) if t.split("::")[1] not in own}
+        plan.add("fixture", direct)
+        plan.add("fixture", readers)
+        items = getattr(plan, "fixture_items", None)
+        if items is None:
+            items = plan.fixture_items = {}
+        for t in readers:
+            items[t] = (idx, attr)
+        plan.escalate("swap")
+        plan.notes.append(f"{path}: pairs {idx[:10]} -> {attr} readers {len(readers)}, direct {len(direct)}")
+        return True
 
     def py_change(self, plan, path, a, b):
         m = self.m

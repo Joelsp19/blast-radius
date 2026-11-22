@@ -304,7 +304,7 @@ class Job:
         # with heavy tests at stake, how broad the breakage is decides them: look further
         nf, dt = (HNF, HDT) if self.heavy else (3, 3000)
         ev = len(self.failed) >= nf or (self.failed and self.est_done - self.first_fail_cpu > dt)
-        if self.todo and policy.should_stop(cur, self.todo, self.cpu, self.ms, self.p, ev):
+        if self.todo and policy.should_stop(cur, self.todo, self.cpu, self.ms, self.p, ev, any_time=not self.heavy):
             self.out |= set(self.todo)
             self.todo = []
             return True
@@ -545,6 +545,27 @@ def main():
                 jcpu[h] = est
                 plan.subsets[h] = (q, st["attr"])
                 R.append(h)
+            # tests reading a class attribute loaded from a changed query-pair fixture: run them
+            # on the changed pairs only (none changed: they cannot fail)
+            for t, (q, attr) in sorted(getattr(plan, "fixture_items", {}).items()):
+                if t not in cands or t in plan.subsets:
+                    continue
+                H.discard(t)
+                D.discard(t)
+                if t in R:
+                    R.remove(t)
+                if not q:
+                    continue
+                st = cm.subtests.get(t)
+                if st is not None and st.get("attr") == attr and len(st["cpu"]) > max(q):
+                    part = sum(st["cpu"][i] for i in q)
+                else:
+                    part = cm.cpu.get(t, ms[t] / 1000) * len(q) / 20
+                if jcpu is cpu:
+                    jcpu = dict(cpu)
+                jcpu[t] = int(1000 * (2.0 + 1.3 * part))  # + the lazily built class setup
+                plan.subsets[t] = (q, attr)
+                R.append(t)
             # fixture-item slicing: loop-over-fixture tests run on just the items that execute a
             # changed line (plus the code outside the loop)
             if plan.mode != "fresh" and plan.touched_exact and not flags.NO_NEWSLICE:

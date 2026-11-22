@@ -51,12 +51,20 @@ def decide_upfront(cands, p, ms, cpu, P):
     return D, H, R
 
 
-def should_stop(S_ms, remaining, cpu, ms, p, evidence=True):
+def should_stop(S_ms, remaining, cpu, ms, p, evidence=True, any_time=False):
     """Stop running if including everything left is cheaper than verifying it.
     Only once the commit is known (or nearly sure) to fail: otherwise keep trying to
     prove it clean, which is worth the whole output cost."""
     if not remaining:
         return True
+    import os
+
+    if any_time and os.environ.get("BR_STOPANY"):
+        # including the rest is cheaper than verifying it, even with nothing failed yet
+        # (with nothing selected, including costs the whole output, which is priced in)
+        base = pack_cost(S_ms)
+        inc = pack_cost(S_ms + [ms[t] for t in remaining]) - base
+        return inc <= sum(cpu[t] for t in remaining)
     if not S_ms or not evidence:
         return False
     base = pack_cost(S_ms)
