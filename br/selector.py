@@ -129,7 +129,9 @@ def slice_by_state(plan, cm, run_ids, out):
     # key-level: a changed dict / set attribute is only observed by tests that read it as a
     # whole or looked up one of the changed keys
     keytests = {}
-    if os.environ.get("BR_NOKEYS") or flags.NO_NEWSLICE:
+    if os.environ.get("BR_NOKEYS", "1") == "1" or flags.NO_NEWSLICE:
+        # off by default: a container can be copied at import time into another class, whose
+        # readers the per-key map does not attribute to the changed container
         plan.orig_kfp = None
     newk = statediff.container_fingerprint(newc) if plan.orig_kfp is not None else {}
     for ck in set(plan.orig_fp) | set(newfp):
@@ -171,7 +173,9 @@ def slice_by_state(plan, cm, run_ids, out):
             continue  # also a class attribute: visible anywhere
         names.add(n)
     scoped = {n: sc for n, sc in mod_scope.items() if sc is not None and n not in cnames}
-    if flags.NO_NEWSLICE:
+    if flags.NO_NEWSLICE or os.environ.get("BR_NOSCOPE", "1") == "1":
+        # off by default: a module global can be copied at import time into objects of other
+        # modules (e.g. a dialect class), so its readers are not limited to its importers
         scoped = {}
     if DEBUG:
         log(plan.cid, "child fingerprinted", round(time.process_time(), 2))

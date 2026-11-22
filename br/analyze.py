@@ -316,7 +316,7 @@ class Analyzer:
             key = (path, oc.co_qualname, oc.co_firstlineno)
             if is_body:
                 if own:
-                    self.body_change(plan, path, oc)
+                    self.body_change(plan, path, oc, a, b)
                 continue
             swaps.append((oc, nc, own, parent))
             if own:
@@ -426,8 +426,19 @@ class Analyzer:
                 best = (a, b)
         return best
 
-    def body_change(self, plan, path, oc):
+    def body_change(self, plan, path, oc, a=None, b=None):
         m = self.m
+        # tests that read a changed module-level name as an attribute (dynamic imports,
+        # module.NAME, copies made at import time) see the change without importing the
+        # module statically: add the recorded readers of every name a changed top-level
+        # statement assigns
+        if oc.co_name == "<module>" and a is not None and b is not None and m.has_attrs:
+            names = changed_toplevel_names(a, b)
+            if names is None:
+                plan.notes.append(f"{path}: top-level names not comparable")
+            else:
+                for n in names:
+                    plan.add("file", m.attr_readers(n))
         plan.escalate("fresh")
         modname = path[:-3].replace("/", ".")
         if modname.endswith(".__init__"):
@@ -448,6 +459,33 @@ class Analyzer:
         plan.add("type", m.qual_prefix_cover(path, q))
         if m.is_enum(tk) or not users:
             plan.add("file", m.file_dependents(path, include_importers=True))
+
+
+def changed_toplevel_names(a, b):
+    """Names bound by top-level statements that differ between two module sources."""
+    try:
+        ta, tb = ast.parse(a), ast.parse(b)
+    except SyntaxError:
+        return None
+
+    def dumps(tree):
+        return {ast.dump(st, include_attributes=False) for st in tree.body}
+
+    da, db = dumps(ta), dumps(tb)
+    out = set()
+    for tree, other in ((ta, db), (tb, da)):
+        for st in tree.body:
+            if ast.dump(st, include_attributes=False) in other:
+                continue
+            for n in ast.walk(st):
+                if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+                    out.add(n.id)
+                elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n in st.__dict__.get("body", [st]) or n is st and isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    out.add(n.name)
+                elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                    for al in n.names:
+                        out.add((al.asname or al.name).split(".")[0])
+    return out
 
 
 def _doc(code):
