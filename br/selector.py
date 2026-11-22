@@ -724,7 +724,7 @@ def main():
         for h in sorted(H, key=lambda h: -ms[h]):
             if h in unobs.get(cid, ()) and not flags.NO_UNOBS:
                 continue
-            if policy.heavy_include(h, [ms[t] for t in sel], ms, nf, P, why[cid].get(h, "file"), ncl[cid]):
+            if False and policy.heavy_include(h, [ms[t] for t in sel], ms, nf, P, why[cid].get(h, "file"), ncl[cid]):  # diagnostic: no heavy tests
                 sel.add(h)
 
     lines = []
