@@ -9,11 +9,18 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if __name__ == "__main__" and len(sys.argv) == 1:
+    summary = {}
     for src in [os.path.join(HERE, "map.json.gz")] + glob.glob(os.path.join(HERE, "sub", "*.json.gz")):
         with gzip.open(src, "rb") as f:
             d = json.loads(f.read())
         with open(src[: -len(".json.gz")] + ".pkl", "wb") as f:
             pickle.dump(d, f, protocol=pickle.HIGHEST_PROTOCOL)
+        if os.sep + "sub" + os.sep in src:
+            summary[os.path.basename(src)] = ("base" in d, frozenset(d.get("lines", {})) | frozenset(d.get("base", {})))
+    # which source files each sub-test coverage file mentions: a lookup for other files is
+    # answered without loading it
+    with open(os.path.join(HERE, "sub", "summary.pkl"), "wb") as f:
+        pickle.dump(summary, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
 def import_state():

@@ -38,6 +38,21 @@ class _LazySubtests:
 
         self.dir = os.path.join(os.path.dirname(path), "sub")
         self.index, self.done = index, dict(inline)
+        self.summary = {}
+        sp = os.path.join(self.dir, "summary.pkl")
+        if os.path.exists(sp):
+            import pickle
+
+            with open(sp, "rb") as f:
+                self.summary = pickle.load(f)
+
+    def info(self, tid):
+        """(is a fixture-item entry, source paths it covers) without loading it, or None."""
+        if tid in self.done:
+            d = self.done[tid]
+            return "base" in d, set(d.get("lines", {})) | set(d.get("base", {}))
+        fn = self.index.get(tid)
+        return None if fn is None else self.summary.get(fn)
 
     def get(self, tid, default=None):
         r = self.done.get(tid)
@@ -140,6 +155,12 @@ class CMap:
     def sub_queries(self, tid, touched):
         """Indices of the sub-test queries of `tid` executing any (path, line) in touched,
         or None if `tid` cannot be sliced."""
+        inf = self.subtests.info(tid)
+        if inf is not None:
+            if inf[0]:
+                return None
+            if not any(path in inf[1] for path, _ in touched):
+                return []
         st = self.subtests.get(tid)
         if st is None or "base" in st:
             return None
@@ -166,6 +187,12 @@ class CMap:
 
     def fixture_slice(self, tid, touched):
         """Fixture-item slicing: (items executing any touched line, base hits?) or None."""
+        inf = self.subtests.info(tid)
+        if inf is not None:
+            if not inf[0]:
+                return None
+            if not any(path in inf[1] for path, _ in touched):
+                return [], False
         st = self.subtests.get(tid)
         if st is None or "base" not in st:
             return None

@@ -924,14 +924,14 @@ def main():
                     q = cm.sub_queries(h, plan.touched)
                     if q is None:
                         continue
-                    st = cm.subtests[h]
+                    st = cm.subtests[h] if q else None
                     est = int(1000 * (0.5 + 1.3 * sum(st["cpu"][i] for i in q))) if q else 50
                     if est > 0.8 * (ms[h] + 2000):
                         continue
                     if jcpu is cpu:
                         jcpu = dict(cpu)
                     jcpu[h] = est
-                    plan.subsets[h] = (q, st["attr"])
+                    plan.subsets[h] = (q, st["attr"] if st else None)
                     H.discard(h)
                     plan.state_check.append(h)
                 R[:0] = plan.state_check  # first: decided before any early stop

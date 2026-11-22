@@ -285,7 +285,7 @@ class Analyzer:
     def py_change(self, plan, path, a, b):
         m = self.m
         try:
-            old = compile(_src_bytes(a), self.root + path, "exec", dont_inherit=True)
+            old = _pinned_code(self.root + path, a)
         except SyntaxError:
             plan.notes.append(f"{path}: original does not compile?")
             plan.no_slice = plan.other_no_slice = True
@@ -459,6 +459,26 @@ class Analyzer:
         plan.add("type", m.qual_prefix_cover(path, q))
         if m.is_enum(tk) or not users:
             plan.add("file", m.file_dependents(path, include_importers=True))
+
+
+def _pinned_code(fullpath, text):
+    """Code of a pinned source file: from the .pyc compiled at build time (same compiler,
+    same path) when it matches the source, else compiled now."""
+    import importlib.util
+    import marshal
+
+    try:
+        pyc = importlib.util.cache_from_source(fullpath)
+        with open(pyc, "rb") as f:
+            data = f.read()
+        with open(fullpath, "rb") as f:
+            src = f.read()
+        flags = int.from_bytes(data[4:8], "little")
+        if flags == 0 and int.from_bytes(data[12:16], "little") == len(src) and src == _src_bytes(text):
+            return marshal.loads(data[16:])
+    except (OSError, ValueError, EOFError):
+        pass
+    return compile(_src_bytes(text), fullpath, "exec", dont_inherit=True)
 
 
 def _src_bytes(text):
