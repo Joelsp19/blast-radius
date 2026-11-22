@@ -7,3 +7,5 @@ NO_NEWSLICE = False  # no key-level, module-scoped or fixture-item slicing
 DIAG_BIT = None
 # diagnostic: run no tests at all (static selection, heavy tests by policy)
 NO_RUN = False
+# no per-query slicing of slow tests on commits whose changed code runs at import time
+NO_PRELOAD_SLICE = False

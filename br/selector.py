@@ -223,6 +223,42 @@ def slice_by_state(plan, cm, run_ids, out):
     return keep
 
 
+def import_state_same(plan):
+    """Child, fresh mode, right after the purge: does a fresh import of the patched sqlglot
+    leave the same import-time state (class and module attributes) as a fresh import of the
+    pinned one (fingerprinted at build time)? The changed functions themselves are expected
+    to differ: their effect is what per-query coverage accounts for."""
+    import importlib
+    import pickle
+
+    import statediff
+
+    try:
+        with open(os.path.join(APP, "import_fp.pkl"), "rb") as f:
+            mods, fp, mfp, noisy = pickle.load(f)
+        if noisy is None:
+            return False
+        for mn in mods:
+            importlib.import_module(mn)
+        names = statediff.changed_names(fp, statediff.fingerprint(statediff.class_keys(mods)))
+        names |= statediff.changed_names(mfp, statediff.module_fingerprint(mods))
+    except BaseException as e:  # noqa
+        log(plan.cid, "state check failed", repr(e))
+        return False
+    names -= {oc.co_name for _, swaps in plan.swaps for oc, _, _, _ in swaps}
+    names -= noisy  # differ between two identical fresh imports
+    # loggers live in the logging module (not purged) and the harness configures them; they
+    # cannot change what a query computes
+    import logging
+
+    names = {n for n in names if not all(
+        isinstance(getattr(sys.modules[m], n), logging.Logger)
+        for m in mods if m in sys.modules and hasattr(sys.modules[m], n))}
+    if DEBUG:
+        log(plan.cid, "import state changed:", sorted(names)[:20])
+    return not names
+
+
 def child_main(plan, run_ids, wfd, cm):
     import harness
     import overlay
@@ -242,10 +278,25 @@ def child_main(plan, run_ids, wfd, cm):
                 hv = [h for h in getattr(plan, "heavy_ids", ()) if h not in run_ids]
                 keep = slice_by_state(plan, cm, run_ids + hv, out)
                 run_ids = [t for t in keep if t not in hv]
+            sc = [h for h in getattr(plan, "state_check", ()) if h in run_ids]
+            if sc:
+                same = import_state_same(plan)
+                for h in sc:
+                    run_ids.remove(h)
+                    if not same:
+                        out.write(f"U {h}\n")  # undecided: include
+                    elif not plan.subsets[h][0]:
+                        out.write(f"R 0 {h}\n")  # no query executes a changed line
+                    else:
+                        run_ids.insert(0, h)
         else:
             do_swaps(plan)
     except BaseException as e:  # noqa
         out.write(f"E {e!r}\n")
+        for h in getattr(plan, "state_check", ()):
+            out.write(f"U {h}\n")
+            if h in run_ids:
+                run_ids.remove(h)
     if DEBUG:
         log(plan.cid, "child sliced", round(time.process_time(), 2), len(run_ids))
     harness.zygote_mode(False)
@@ -355,6 +406,11 @@ def handle_line(job, line):
         job.est_done += job.cpu.get(tid, 0) if job.cpu else 0
         job.cur = None
         job.cur_t = time.time()
+    elif line.startswith("U "):
+        tid = line[2:]
+        job.out.add(tid)
+        if tid in job.todo:
+            job.todo.remove(tid)
     elif line.startswith("K "):
         tid = line[2:]
         job.unobs.add(tid)
@@ -629,10 +685,34 @@ def main():
                     if t not in R:
                         R.append(t)
                 R.sort(key=lambda t: (-p[t] / max(jcpu[t], 1), jcpu[t]))
+            # slow tests of a commit whose changed code runs at import time: if the child finds
+            # the import-time state unchanged, the change reaches a query only by executing a
+            # changed line, so run just those queries (none: the test cannot fail). Otherwise
+            # the child reports them undecided and they are included.
+            plan.state_check = []
+            if (plan.mode == "fresh" and plan.preload_hit and not plan.other_no_slice
+                    and plan.touched_exact and plan.touched and not (set(plan.files) & cm.setup_paths)
+                    and not flags.NO_PRELOAD_SLICE):
+                for h in sorted(H):
+                    q = cm.sub_queries(h, plan.touched)
+                    if q is None:
+                        continue
+                    st = cm.subtests[h]
+                    est = int(1000 * (0.5 + 1.3 * sum(st["cpu"][i] for i in q))) if q else 50
+                    if est > 0.8 * (ms[h] + 2000):
+                        continue
+                    if jcpu is cpu:
+                        jcpu = dict(cpu)
+                    jcpu[h] = est
+                    plan.subsets[h] = (q, st["attr"])
+                    H.discard(h)
+                    plan.state_check.append(h)
+                R[:0] = plan.state_check  # first: decided before any early stop
         except Exception as e:  # noqa
             log(plan.cid, "slicing failed", repr(e))
             D, H, R = D0, H0, R0
             plan.subsets = {}
+            plan.state_check = []
             jcpu = cpu
         results[plan.cid] = set(D)
         heavies[plan.cid] = (H, p, {t for t in D if p[t] >= 0.5})

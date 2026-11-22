@@ -85,6 +85,8 @@ class Plan:
         self.touched_exact = True  # False when some change fell back to function coverage
         self.slice_mods = set()  # modules whose class/module bodies changed (state-diff slicing)
         self.no_slice = False  # some change other than body changes forces fresh mode
+        self.other_no_slice = False  # no_slice for a reason other than preload-run code
+        self.preload_hit = False  # changed code runs at import time
 
     RANK = {"fixture": 5, "line": 4, "doc": 3, "type": 2, "file": 1}
 
@@ -215,7 +217,7 @@ class Analyzer:
                 # added / deleted / renamed module
                 plan.escalate("fresh")
                 plan.notes.append(f"{path}: added/removed")
-                plan.no_slice = True
+                plan.no_slice = plan.other_no_slice = True
                 if txt_old is not None:
                     plan.add("file", m.file_dependents(path, include_importers=True))
                 if path.startswith("tests/"):
@@ -233,7 +235,7 @@ class Analyzer:
                 plan.escalate("fresh")
                 plan.add("fixture", m.preload_open_users(path))
                 plan.notes.append(f"{path}: preload-opened -> fresh")
-                plan.no_slice = True
+                plan.no_slice = plan.other_no_slice = True
             elif users:
                 plan.escalate("swap")
                 plan.notes.append(f"{path}: opened by {len(users)}")
@@ -286,7 +288,7 @@ class Analyzer:
             old = compile(a, self.root + path, "exec", dont_inherit=True)
         except SyntaxError:
             plan.notes.append(f"{path}: original does not compile?")
-            plan.no_slice = True
+            plan.no_slice = plan.other_no_slice = True
             plan.escalate("fresh")
             plan.add("file", m.file_dependents(path, include_importers=True))
             return
@@ -294,14 +296,14 @@ class Analyzer:
             new = compile(b, self.root + path, "exec", dont_inherit=True)
         except (SyntaxError, ValueError) as e:
             plan.notes.append(f"{path}: COMPILE ERROR {e.__class__.__name__}")
-            plan.no_slice = True
+            plan.no_slice = plan.other_no_slice = True
             plan.escalate("fresh")
             plan.add("file", m.file_dependents(path, include_importers=True))
             return
         dc = deep_changed(old, new)
         if dc is None:
             plan.notes.append(f"{path}: shape change")
-            plan.no_slice = True
+            plan.no_slice = plan.other_no_slice = True
             plan.escalate("fresh")
             plan.add("file", m.file_dependents(path, include_importers=True))
             return
@@ -323,6 +325,7 @@ class Analyzer:
                 plan.escalate("fresh")
                 plan.notes.append(f"{path}:{oc.co_qualname} runs at preload -> fresh")
                 plan.no_slice = True
+                plan.preload_hit = True
                 # state built at import time may carry the change anywhere
                 plan.add("file", m.ids)
             if oc.co_freevars != nc.co_freevars:
