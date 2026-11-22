@@ -32,6 +32,9 @@ PAR = int(os.environ.get("BR_PAR", "2"))
 DEBUG = os.environ.get("BR_DEBUG")
 HNF = int(os.environ.get("BR_HNF", "10"))
 HDT = int(os.environ.get("BR_HDT", "5000"))
+SETUP_LIMIT = float(os.environ.get("BR_SETUP_LIMIT", "10"))
+PRE_LIMIT = float(os.environ.get("BR_PRE_LIMIT", "15"))  # cpu s before the first test
+MAX_NAMES = int(os.environ.get("BR_MAX_NAMES", "40"))
 T0 = time.time()
 
 
@@ -179,53 +182,67 @@ def slice_by_state(plan, cm, run_ids, out):
         scoped = {}
     if DEBUG:
         log(plan.cid, "child fingerprinted", round(time.process_time(), 2))
-    if (scoped or keytests) and propagated(plan, cm):
-        # the change was copied into other modules' objects at import: their readers are not
-        # limited to the changed module's importers / the changed keys' readers
-        scoped = {}
-        keytests = {}
+    if len(names) > MAX_NAMES:
+        return run_ids  # a change this broad (an enum, a base class, ...): slicing cannot pay
+    if any(n.startswith("__") and n.endswith("__") for n in names):
+        return run_ids  # dunder methods are invoked implicitly (calls, operators): no textual trace
     keep_kinds = {"line", "fixture"}
-    allowed = {t for t in run_ids if plan.why.get(t) in keep_kinds}
+    base_allowed = {t for t in run_ids if plan.why.get(t) in keep_kinds}
+    # (name, file, tests executing a line of that file that mentions the name)
     hits = statediff.lines_mentioning(SG, names, cm.line_files())
-    mentioned = set()
-    textual = {n: set() for n in names}
+    found = []
     for rel, lines in hits.items():
         with open(os.path.join(SG, rel), encoding="utf-8") as f:
             src_lines = f.read().split(NL)
         for ln in lines:
             txt = src_lines[ln - 1] if ln - 1 < len(src_lines) else ""
-            tests = cm.line_tests(rel, ln)
             for n in names:
-                if n in scoped and rel not in scoped[n]:
-                    continue
                 if re.search(BOUND + re.escape(n) + BOUND, txt):
-                    mentioned.add(n)
-                    textual[n] |= tests
-    for n in scoped:
-        if n not in mentioned:
-            pat = re.compile(BOUND + re.escape(n) + BOUND)
-            for rel in scoped[n]:
-                try:
-                    with open(os.path.join(SG, rel), encoding="utf-8") as f:
-                        if pat.search(f.read()):
-                            mentioned.add(n)  # only on lines no test executes
-                            break
-                except OSError:
-                    pass
-    if any(n.startswith("__") and n.endswith("__") for n in names):
-        return run_ids  # dunder methods are invoked implicitly (calls, operators): no textual trace
-    if names - mentioned:
-        # some changed attribute is only reached dynamically: keep all class users
+                    found.append((n, rel, cm.line_tests(rel, ln)))
+
+    def allowed_for(scoped, keytests):
+        """Tests that can observe the change (None: cannot tell, keep everything)."""
+        mentioned = set()
+        textual = {n: set() for n in names}
+        for n, rel, tests in found:
+            if n in scoped and rel not in scoped[n]:
+                continue
+            mentioned.add(n)
+            textual[n] |= tests
+        for n in scoped:
+            if n not in mentioned:
+                pat = re.compile(BOUND + re.escape(n) + BOUND)
+                for rel in scoped[n]:
+                    try:
+                        with open(os.path.join(SG, rel), encoding="utf-8") as f:
+                            if pat.search(f.read()):
+                                mentioned.add(n)  # only on lines no test executes
+                                break
+                    except OSError:
+                        pass
+        if names - mentioned:
+            return None  # some changed attribute is only reached dynamically
+        allowed = set(base_allowed)
+        for n in names:
+            # both are over-approximations of the tests that read `n`; so is their intersection
+            obs = (textual[n] & cm.attr_readers(n)) if cm.has_attrs else textual[n]
+            kt = keytests.get(n)
+            if kt:
+                obs = obs & kt
+            elif kt is not None and kt is not False:
+                obs = set()  # no test reads the changed keys
+            allowed |= obs
+        return allowed
+
+    allowed = allowed_for(scoped, keytests)
+    if scoped or keytests:
+        # scoped / per-key slicing assume the change stays in its module; only when that
+        # assumption drops tests is it checked (the change may be copied elsewhere at import)
+        plain = allowed_for({}, {})
+        if allowed != plain and propagated(plan, cm):
+            allowed = plain
+    if allowed is None:
         return run_ids
-    for n in names:
-        # both are over-approximations of the tests that read `n`; so is their intersection
-        obs = (textual[n] & cm.attr_readers(n)) if cm.has_attrs else textual[n]
-        kt = keytests.get(n)
-        if kt:
-            obs = obs & kt
-        elif kt is not None and kt is not False:
-            obs = set()  # no test reads the changed keys
-        allowed |= obs
     keep = [t for t in run_ids if t in allowed]
     out.write("N " + ",".join(sorted(names))[:2000] + NL)
     for t in run_ids:
@@ -460,6 +477,7 @@ def spawn(job, cm):
             os._exit(1)
     os.close(w)
     job.pid, job.rfd, job.buf, job.cur, job.cur_t = pid, r, b"", None, time.time()
+    job.started = False
 
 
 def proc_cpu(pid):
@@ -473,6 +491,7 @@ def proc_cpu(pid):
 
 def handle_line(job, line):
     if line.startswith("S "):
+        job.started = True
         job.cur = line[2:]
         job.cur_t = time.time()
         job.cur_cpu = proc_cpu(job.pid)
@@ -595,8 +614,28 @@ def run_jobs(jobs, cm, deadline):
                     finish_child(j, killed=True)
                     active.remove(j)
                     continue
+            if j.pid is not None and j.cur is None and not j.started and proc_cpu(j.pid) > PRE_LIMIT:
+                # stuck before the first test (state slicing / checks on a pathological change):
+                # restart without them
+                log(j.plan.cid, "pre-test phase too slow: restarting without state slicing")
+                try:
+                    os.kill(j.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                j.plan.orig_fp = None
+                for h in getattr(j.plan, "state_check", ()) or ():
+                    j.out.add(h)  # its proof was not reached: include
+                    if h in j.todo:
+                        j.todo.remove(h)
+                j.plan.state_check = []
+                finish_child(j, killed=True)
+                active.remove(j)
+                if j.todo:
+                    pending.insert(0, j)
+                continue
             if j.pid is not None and j.cur is not None:
-                lim = j.timeouts.get(j.cur, 60.0)
+                # class setups normally take well under a second: a hang there is cut short
+                lim = j.timeouts.get(j.cur, SETUP_LIMIT if j.cur == "__setup__" else 60.0)
                 used = proc_cpu(j.pid) - j.cur_cpu
                 if used > lim or now - j.cur_t > 6 * lim + 30:
                     log(j.plan.cid, "timeout", j.cur)
@@ -604,9 +643,18 @@ def run_jobs(jobs, cm, deadline):
                         os.kill(j.pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
+                    # far slower than recorded: a hang counts as a failure under pytest-timeout,
+                    # so it is included and is evidence the commit breaks things
+                    if j.cur is not None and j.cur != "__setup__":
+                        j.failed.add(j.cur)
+                        if j.cur in j.todo:
+                            j.todo.remove(j.cur)
+                        if j.first_fail_cpu is None:
+                            j.first_fail_cpu = j.est_done
+                        j.cur = None
                     finish_child(j, killed=True)
                     active.remove(j)
-                    if j.todo:
+                    if j.todo and not j.maybe_stop():
                         pending.insert(0, j)
 
 
