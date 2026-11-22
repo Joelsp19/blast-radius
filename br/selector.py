@@ -343,7 +343,8 @@ def import_changed(plan, subset=None):
         for mn in use:
             importlib.import_module(mn)
         inuse = set(use)
-        newc = {k: v for k, v in statediff.fingerprint(statediff.class_keys(use)).items() if k.split(":")[0] in inuse}
+        ck = {k: c for k, c in statediff.class_keys(use).items() if k.split(":")[0] in inuse}
+        newc = statediff.fingerprint(ck)
         oldc = {k: v for k, v in fp.items() if k.split(":")[0] in inuse}
         oldm = {k: v for k, v in mfp.items() if k in inuse}
         names = statediff.changed_names(oldc, newc) | statediff.changed_names(oldm, statediff.module_fingerprint(use))
@@ -382,7 +383,9 @@ def propagated(plan, cm):
                 paths.add(cand)
     others = set()
     for pth in paths:
-        for q in cm.rclosure.get(pth, ()):
+        # a value copied at import time first lands in a direct importer: if none of those
+        # changed, nothing further down the import chain received it either
+        for q in cm.mod_importers.get(pth, ()):
             m = q[:-3].replace("/", ".")
             others.add(m[: -len(".__init__")] if m.endswith(".__init__") else m)
     others -= set(plan.slice_mods)
