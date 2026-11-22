@@ -308,8 +308,22 @@ def child_main(plan, run_ids, wfd, cm):
                 same = import_state_same(plan)
                 if same and getattr(plan, "setup_check", False):
                     same = setup_state_same(plan)
+                proven = None
                 for h in sc:
                     run_ids.remove(h)
+                    if h in getattr(plan, "replay", ()):
+                        if proven is None:
+                            import replay
+
+                            try:
+                                proven = same and replay.prove(plan.swaps, lambda *a: log(plan.cid, *a))
+                            except BaseException as e:  # noqa
+                                log(plan.cid, "replay failed", repr(e))
+                                proven = False
+                            if DEBUG:
+                                log(plan.cid, "replay proven:", proven)
+                        out.write((f"R 0 {h}" if proven else f"U {h}") + NL)
+                        continue
                     if not same:
                         out.write(f"U {h}\n")  # undecided: include
                     elif not plan.subsets[h][0]:
@@ -723,7 +737,23 @@ def main():
                     and not flags.NO_PRELOAD_SLICE):
                 # sqlglot code a class setup runs: its setup-built data is compared too
                 plan.setup_check = bool(set(plan.files) & cm.setup_paths)
+                import replay
+
+                rep = set()
+                if plan.setup_check and set(plan.files) == {"sqlglot/executor/table.py"} and plan.swaps and all(
+                        oc.co_qualname.split(".")[-1] == "__init__"
+                        and oc.co_qualname.split(".")[0] in replay.REPLAYED.get(path[:-3].replace("/", "."), ())
+                        for path, sw in plan.swaps for oc, _, _, _ in sw):
+                    rep = {h for h in H if h in replay.HEAVY}
+                plan.replay = sorted(rep)
                 for h in sorted(H):
+                    if h in rep:
+                        if jcpu is cpu:
+                            jcpu = dict(cpu)
+                        jcpu[h] = 3000  # the replay proof
+                        H.discard(h)
+                        plan.state_check.append(h)
+                        continue
                     q = cm.sub_queries(h, plan.touched)
                     if q is None:
                         continue
