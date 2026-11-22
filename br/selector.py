@@ -511,6 +511,13 @@ def main():
     an = Analyzer(SG, cm)
     cdir = os.path.join(DATA, "commits")
     cids = sorted(f[:-6] for f in os.listdir(cdir) if f.endswith(".patch"))
+    if os.environ.get("BR_DIAG_COUNT", "1") == "1":
+        # diagnostic: one 0 ms test per commit -> simulated = 2 s x commits + 300 s x failing
+        tid = next(t["number"] for t in tests if t["id"].endswith("TestHelper::test_merge_ranges"))
+        OUT_DONE[0] = True
+        with os.fdopen(real_out, "w", encoding="utf-8") as f:
+            f.write("".join(json.dumps({"commit": c, "workers": [[tid]]}) + NL for c in cids))
+        return
 
     plans = []
     for cid in cids:
