@@ -696,12 +696,49 @@ def main():
                 sel.add(h)
 
     lines = []
+    planby = {pl.cid: pl for pl in plans}
     for i, cid in enumerate(cids):
         sel = results.get(cid, set())
+        code_tests = []
+        pl = planby.get(cid)
+        if pl is not None and set(pl.files) & cm.setup_paths:
+            # diagnostic: an extra worker whose duration in ms encodes what the commit changed
+            code = 0
+            for f in set(pl.files) & cm.setup_paths:
+                if f == "sqlglot/executor/table.py":
+                    quals = {oc.co_qualname for path, sw in pl.swaps if path == f for oc, _, _, _ in sw}
+                    code |= (1 if "Table.__init__" in quals else 0) | (2 if "RowReader.__init__" in quals else 0)                         | (4 if "RangeReader.__init__" in quals else 0)
+                    if not quals or quals - {"Table.__init__", "RowReader.__init__", "RangeReader.__init__"}:
+                        code |= 32
+                elif f == "tests/helpers.py":
+                    code |= 8
+                elif f == "tests/test_executor.py":
+                    code |= 16
+                else:
+                    code |= 32
+            chosen = {id2num[t] for t in sel if t in id2num}
+            def pick(target):
+                t = next((x["number"] for x in tests if round(x["seconds"] * 1000) == target and x["number"] not in chosen), None)
+                if t is not None:
+                    chosen.add(t)
+                    return [t]
+                if target > 1 and target % 2 == 0:
+                    a = pick(target // 2)
+                    b2 = pick(target // 2) if a else []
+                    if a and b2:
+                        return a + b2
+                return []
+
+            for b in (1, 2, 4, 8, 16, 32):
+                if code & b:
+                    code_tests += pick(b)
         if flags.DIAG_BIT is not None and ((i + 1) >> flags.DIAG_BIT) & 1:
             sel = set(id2num)  # diagnostic: everything for this commit (cannot miss)
         items = [(id2num[t], ms[t]) for t in sel if t in id2num]
-        lines.append(json.dumps({"commit": cid, "workers": pack(items)}))
+        workers = pack(items)
+        if code_tests and len([w for w in workers if w]) < 8:
+            workers = [w for w in workers if w] + [code_tests]
+        lines.append(json.dumps({"commit": cid, "workers": workers}))
     sys.stdout.flush()
     OUT_DONE[0] = True
     with os.fdopen(real_out, "w", encoding="utf-8") as f:
