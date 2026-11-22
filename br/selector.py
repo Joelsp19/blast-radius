@@ -467,7 +467,7 @@ def run_jobs(jobs, cm, deadline):
                         pending.insert(0, j)
 
 
-GATE = os.environ.get("BR_GATE", "0") == "1"
+GATE = os.environ.get("BR_GATE", "1") == "1"
 GATE_K = float(os.environ.get("BR_GATE_K", "1.25"))  # measured / estimated cpu
 GATE_OV = {"fresh": 1500, "swap": 300}  # ms: starting and preparing a child
 
