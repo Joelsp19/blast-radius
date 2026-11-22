@@ -235,7 +235,7 @@ def child_main(plan, run_ids, wfd, cm):
     try:
         tmp = f"/tmp/br/{plan.cid}"
         overlay.install(SG, plan.files, tmp)
-        harness.EAGER[0] = plan.mode == "fresh" and bool(plan.no_slice)
+        harness.EAGER[0] = bool(set(plan.files) & cm.setup_paths)
         if plan.mode == "fresh":
             do_purge(plan, cm)
             if getattr(plan, "orig_fp", None) is not None:

@@ -93,6 +93,11 @@ class CMap:
                 x = json.load(f)
             self.preload_keys |= {tuple(k) for k in x["preload_keys"]}
             self.preload_opens |= set(x["preload_opens"])
+        # files that lazily run class setups read or execute: a change there decides whether
+        # setUpClass raises, so the child runs those setups eagerly (see harness.EAGER)
+        self.setup_paths = {"tests/test_executor.py"}
+        if os.path.exists(extra):
+            self.setup_paths |= {k[0] for k in x["preload_keys"]} | set(x["preload_opens"])
         self.types = _LazySets(ids, d["types"])
         self.mro = d["mro"]
         self.enums = set(d.get("enums", []))
