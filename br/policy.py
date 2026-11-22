@@ -3,6 +3,8 @@
 Cost model (per commit):  pack_cost(output) + CPU spent verifying + 300 * P(miss).
 """
 
+import os
+
 MISS = 300_000  # ms
 WORKER = 2_000  # ms
 
@@ -57,8 +59,8 @@ def should_stop(S_ms, remaining, cpu, ms, p, evidence=True, any_time=False):
     prove it clean, which is worth the whole output cost."""
     if not remaining:
         return True
-    import os
-
+    if os.environ.get("BR_NOSTOP", "1") == "1":
+        return False  # verify every candidate
     if any_time and os.environ.get("BR_STOPANY"):
         # including the rest is cheaper than verifying it, even with nothing failed yet
         # (with nothing selected, including costs the whole output, which is priced in)
