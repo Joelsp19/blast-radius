@@ -621,7 +621,9 @@ def main():
             j = Job(plan, R, timeouts, D, ms, jcpu, p)
             j.heavy = tuple(sorted(H))
             plan.heavy_ids = j.heavy
-            if not j.maybe_stop():
+            if flags.NO_RUN:
+                results[plan.cid] |= set(R)  # diagnostic: include every candidate, run nothing
+            elif not j.maybe_stop():
                 jobs.append(j)
             else:
                 results[plan.cid] |= j.out
