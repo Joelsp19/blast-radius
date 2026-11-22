@@ -397,6 +397,27 @@ def propagated(plan, cm):
     return names is None or bool(names)
 
 
+def lazy_import_files(mods, cm):
+    """Test files whose import resolves names through one of `mods` (modules with lazy
+    exports): a top-level `from <mod> import ...`, or a top-level import of such a test file."""
+    pats = tuple(f"from {m} import " for m in mods)
+    src = {}
+    for tf in cm.by_file:
+        try:
+            with open(os.path.join(SG, tf), encoding="utf-8") as f:
+                src[tf] = [ln for ln in f.read().split(NL) if ln and not ln[0].isspace()]
+        except OSError:
+            src[tf] = []
+    hit = {tf for tf, lines in src.items() if any(ln.startswith(pats) for ln in lines)}
+    while True:
+        names = {tf[:-3].replace("/", ".") for tf in hit}
+        more = {tf for tf, lines in src.items() if tf not in hit and any(
+            ln.startswith(("from " + n + " import", "import " + n)) for n in names for ln in lines)}
+        if not more:
+            return hit
+        hit |= more
+
+
 def child_main(plan, run_ids, wfd, cm):
     import harness
     import overlay
@@ -430,6 +451,7 @@ def child_main(plan, run_ids, wfd, cm):
             # a change that can break imports: every test whose file does not import with the
             # change fails ("the test's file cannot be imported"); find them by importing
             broken = bool(plan.other_no_slice)
+            lazy_mods = set()
             if not broken:
                 import importlib
 
@@ -445,9 +467,10 @@ def child_main(plan, run_ids, wfd, cm):
                         # a module with lazy exports (module-level __getattr__) decides at import
                         # time what `from module import X` in a test file resolves to
                         if "__getattr__" in vars(m_):
-                            broken = True
-            if broken:
-                for tf in sorted(cm.by_file):
+                            lazy_mods.add(mn)
+            sweep = sorted(cm.by_file) if broken else sorted(lazy_import_files(lazy_mods, cm)) if lazy_mods else []
+            if sweep:
+                for tf in sweep:
                     try:
                         mod, err = harness.import_test_module(tf[:-3].replace("/", "."))
                     except BaseException as e:  # noqa
