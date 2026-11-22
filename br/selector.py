@@ -467,6 +467,32 @@ def run_jobs(jobs, cm, deadline):
                         pending.insert(0, j)
 
 
+GATE = os.environ.get("BR_GATE", "0") == "1"
+GATE_K = float(os.environ.get("BR_GATE_K", "1.25"))  # measured / estimated cpu
+GATE_OV = {"fresh": 1500, "swap": 300}  # ms: starting and preparing a child
+
+
+def worth_running(plan, D, R, p, ms, jcpu):
+    """Expected output saving of verifying R (tests that pass are dropped) against the CPU
+    it costs, averaged over pass/fail draws from the priors."""
+    import random
+
+    import policy
+
+    rng = random.Random(len(R) * 7919 + len(D))
+    base = [ms[t] for t in D]
+    full = policy.pack_cost(base + [ms[t] for t in R])
+    n = 24
+    e = 0
+    for _ in range(n):
+        e += policy.pack_cost(base + [ms[t] for t in R if rng.random() < p[t]])
+    benefit = full - e / n
+    cost = GATE_K * sum(jcpu[t] for t in R) + GATE_OV.get(plan.mode, 300)
+    if DEBUG:
+        log(plan.cid, "gate benefit", int(benefit), "cost", int(cost))
+    return benefit > cost
+
+
 def main():
     # keep stdout clean: anything printed while we work goes to stderr
     real_out = os.dup(1)
@@ -621,8 +647,14 @@ def main():
             j = Job(plan, R, timeouts, D, ms, jcpu, p)
             j.heavy = tuple(sorted(H))
             plan.heavy_ids = j.heavy
+            slicing = plan.mode == "fresh" and plan.slice_mods and not plan.no_slice
             if flags.NO_RUN:
                 results[plan.cid] |= set(R)  # diagnostic: include every candidate, run nothing
+            elif GATE and not H and not slicing and not worth_running(plan, D, R, p, ms, jcpu):
+                # verifying is expected to cost more CPU than it can save: include instead
+                results[plan.cid] |= set(R)
+                if DEBUG:
+                    log(plan.cid, "gate: include", len(R), "without running")
             elif not j.maybe_stop():
                 jobs.append(j)
             else:
